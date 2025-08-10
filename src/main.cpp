@@ -18,29 +18,80 @@
 // ---------- Panel selection ----------
 // 2.9" (D) UC8151D:
 GxEPD2_BW<GxEPD2_290_T5D, GxEPD2_290_T5D::HEIGHT> display(GxEPD2_290_T5D(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
-// If yours is actually the V2 panel, swap to:
+// If your panel is V2 instead, use the following and comment the line above:
 // GxEPD2_BW<GxEPD2_290_T94_V2, GxEPD2_290_T94_V2::HEIGHT> display(GxEPD2_290_T94_V2(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
 
-// ---------- U8g2 font helper ----------
-U8G2_FOR_ADAFRUIT_GFX u8g2;                // renders U8g2 fonts onto Adafruit_GFX
-// Big crisp numeric font (digits + punctuation); ~58px tall:
-#define BIG_NUM_FONT u8g2_font_logisoso58_tn
+// ---------- U8g2 bridge for crisp large fonts ----------
+U8G2_FOR_ADAFRUIT_GFX u8g2;
 
 // ---------- BLE UUIDs ----------
-static const BLEUUID SERVICE_UUID        ("0000f00d-0000-1000-8000-00805f9b34fb");
-static const BLEUUID CHAR_UUID_YARDAGE   ("0000f00e-0000-1000-8000-00805f9b34fb"); // yardage
-static const BLEUUID CHAR_UUID_CONTROL   ("0000f00f-0000-1000-8000-00805f9b34fb"); // control
+static const BLEUUID SERVICE_UUID      ("0000f00d-0000-1000-8000-00805f9b34fb");
+static const BLEUUID CHAR_UUID_YARDAGE ("0000f00e-0000-1000-8000-00805f9b34fb"); // yardage
+static const BLEUUID CHAR_UUID_CONTROL ("0000f00f-0000-1000-8000-00805f9b34fb"); // control
 
-// ---------- Config (runtime via CFG) ----------
+// ==================== UI PARAMS (fonts, spacing) ====================
+struct FontSet {
+  const uint8_t* u8g2_big;       // big yardage font (U8g2)
+  const GFXfont* gfx_label;      // GFX font for labels and F/B
+  const GFXfont* gfx_small;      // GFX small (nullptr => built-in 5x7)
+  const char*    name;
+};
+
+// Presets (digits-only *_tn variants where applicable)
+static FontSet FONTSET_LOGI92 = {
+  u8g2_font_logisoso92_tn, // tall/condensed ~92px, digits-only
+  &FreeSansBold12pt7b,
+  nullptr,
+  "LOGI92"
+};
+static FontSet FONTSET_BOLD49 = {
+  u8g2_font_fub49_tn,      // very bold ~49px, digits-only
+  &FreeSansBold12pt7b,
+  nullptr,
+  "BOLD49"
+};
+static FontSet FONTSET_BOLD42 = {
+  u8g2_font_fub42_tn,      // bold ~42px, digits-only
+  &FreeSansBold12pt7b,
+  nullptr,
+  "BOLD42"
+};
+
+// Choose default (largest available)
+static FontSet* UI_FONT = &FONTSET_LOGI92;
+
+// Spacing & layout (tunable)
+namespace UI {
+  static int LEFT_SAFE    = 36;  // preserve HOLE block
+  static int RIGHT_MARG   = 6;   // right screen padding
+  static int GAP_FB       = 10;  // gap between big number and F/B
+  static int FB_STACK_GAP = 6;   // gap within F/B stack
+  static int BAND_PAD_V   = 20;  // extra vertical pad
+  static int BAND_MIN_H   = 110; // min band height
+  static int DEBUG_PAD_B  = 2;   // debug baseline bottom pad
+  static int FB_NUDGE_UP  = 4;   // raise front/back a few px (fix “too low”)
+}
+
+// Helpers to select fonts
+static inline void useLabelFont() {
+  if (UI_FONT->gfx_label) display.setFont(UI_FONT->gfx_label);
+  else display.setFont();
+}
+static inline void useSmallFont() {
+  if (UI_FONT->gfx_small) display.setFont(UI_FONT->gfx_small);
+  else display.setFont();
+}
+
+// ==================== Config (runtime via CFG) ====================
 static uint32_t CFG_STALE_MS      = 15000; // X: show '---' if no update for X ms
-static uint32_t CFG_MIN_REDRAW_MS = 1200;  // Y: throttle redraws to at most once per Y ms
-static uint16_t CFG_EPSILON_YD    = 2;     // Z: ignore changes smaller than Z yards
+static uint32_t CFG_MIN_REDRAW_MS = 1200;  // Y: throttle redraws
+static uint16_t CFG_EPSILON_YD    = 2;     // Z: ignore small changes
 
-// ---------- State ----------
+// ==================== State ====================
 static NimBLECharacteristic* gCharYardage = nullptr;
 static NimBLECharacteristic* gCharControl = nullptr;
 
-static bool     debugMode         = false; // draw bottom line when true
+static bool     debugMode         = false;
 static bool     bleConnected      = false;
 static uint8_t  gHole             = 0;
 static uint16_t gCenterY          = 0;
@@ -62,7 +113,7 @@ static bool     lastDrawnStale    = true;
 static const uint32_t FULL_REFRESH_EVERY = 8;
 static const uint32_t MIN_FULL_GAP_MS    = 15000;
 
-// ---------- Helpers ----------
+// ==================== Helpers ====================
 static inline bool isStale() {
   if (lastUpdateRxMs == 0) return true;
   return (millis() - lastUpdateRxMs) >= CFG_STALE_MS;
@@ -75,7 +126,6 @@ static void publishState(bool notify) {
              (unsigned)gHole, (unsigned)gCenterY, (unsigned)gFrontY, (unsigned)gBackY);
   else
     snprintf(buf, sizeof(buf), "H%u %u", (unsigned)gHole, (unsigned)gCenterY);
-
   gCanonical = buf;
   if (gCharYardage) {
     gCharYardage->setValue((uint8_t*)gCanonical.c_str(), gCanonical.length());
@@ -83,7 +133,7 @@ static void publishState(bool notify) {
   }
 }
 
-static void drawScreen(bool forceFull); // fwd
+static void drawScreen(bool forceFull); // forward decl
 
 static void markDirtyIfNeeded(bool forceFull=false) {
   bool need = false;
@@ -107,16 +157,18 @@ static void setYardage(uint8_t hole, uint16_t centerY, bool hasFB, uint16_t fron
 
   if (holeChanged || centerChanged) {
     publishState(true);
-    markDirtyIfNeeded(holeChanged /*forceFull to ensure header updates*/);
+    // Force a full refresh if hole changed (to redraw header region cleanly)
+    markDirtyIfNeeded(holeChanged);
   }
 }
 
-// ---------- BLE callbacks ----------
+// ==================== BLE callbacks ====================
 class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer*, ble_gap_conn_desc*) override { bleConnected = true; markDirtyIfNeeded(); }
   void onDisconnect(NimBLEServer*) override { bleConnected = false; NimBLEDevice::startAdvertising(); markDirtyIfNeeded(); }
 };
 
+// Control strings: DEBUG, CFG, FONTSET, (future) LAYOUT
 static void handleControlCommand(const std::string& s) {
   String cmd = String(s.c_str()); cmd.trim();
   String u = cmd; u.toUpperCase();
@@ -143,6 +195,15 @@ static void handleControlCommand(const std::string& s) {
     drawScreen(true);
     return;
   }
+
+  if (u.startsWith("FONTSET=")) {
+    if      (u.endsWith("LOGI92")) UI_FONT = &FONTSET_LOGI92;
+    else if (u.endsWith("BOLD49")) UI_FONT = &FONTSET_BOLD49;
+    else if (u.endsWith("BOLD42")) UI_FONT = &FONTSET_BOLD42;
+    drawScreen(true);
+    return;
+  }
+
 }
 
 class ControlCallbacks : public NimBLECharacteristicCallbacks {
@@ -195,136 +256,127 @@ class YardageCallbacks : public NimBLECharacteristicCallbacks {
   }
 };
 
-// ---------- Drawing ----------
+// ==================== Drawing ====================
 
-// HOLE header (top-left). This area is outside the partial band.
+// HOLE header (left strip). Draw during full refreshes; hole change forces full.
 static void drawHoleHeader() {
   display.setTextColor(GxEPD_BLACK);
 
-  display.setFont(&FreeSansBold12pt7b);
+  // Clear a safe strip on the left, full height
+  display.fillRect(0, 0, UI::LEFT_SAFE, display.height(), GxEPD_WHITE);
+
+  useLabelFont();
   display.setCursor(4, 18);
   display.print("HOLE");
 
-  display.setFont(); // tiny default
-  display.setCursor(10, 34);
+  useLabelFont();
+  display.setCursor(4, 36);
   if (gHole) display.print((int)gHole);
   else       display.print("-");
 }
 
-// Bottom-left debug line (use u8g2 metrics to avoid clipping)
+// Bottom-left debug line (no clipping; use u8g2 metrics)
 static void drawDebugLine() {
   if (!debugMode) return;
 
-  char dbg[112];
+  char dbg[128];
   int ageS = lastUpdateRxMs ? (int)((millis() - lastUpdateRxMs)/1000) : -1;
-  snprintf(dbg, sizeof(dbg), "[DBG] BLE:%s  RX:%s  X=%lu Y=%lu Z=%u",
+  snprintf(dbg, sizeof(dbg), "[DBG] BLE:%s  RX:%s  X=%lu Y=%lu Z=%u  FS:%s",
            bleConnected ? "CON" : "DISC",
            (ageS >= 0 ? (String(ageS) + "s").c_str() : "-"),
-           (unsigned long)CFG_STALE_MS, (unsigned long)CFG_MIN_REDRAW_MS, (unsigned)CFG_EPSILON_YD);
+           (unsigned long)CFG_STALE_MS, (unsigned long)CFG_MIN_REDRAW_MS, (unsigned)CFG_EPSILON_YD,
+           UI_FONT->name);
 
-  // Use u8g2’s tiny built-in (clean baseline control)
   u8g2.setForegroundColor(GxEPD_BLACK);
   u8g2.setBackgroundColor(GxEPD_WHITE);
-  u8g2.setFont(u8g2_font_6x10_tf);      // small, readable
+  u8g2.setFont(u8g2_font_6x10_tf);
   int ascent  = u8g2.getFontAscent();
-  int descent = u8g2.getFontDescent();  // negative
-  int fh = ascent - descent;            // total font height
-  int baseline = display.height() - 2;  // 2px margin
-  // Ensure whole glyph box is inside:
+  int descent = u8g2.getFontDescent();   // negative
+  int fh = ascent - descent;
+  int baseline = display.height() - UI::DEBUG_PAD_B;
   baseline = max(baseline, fh + 1);
   u8g2.setCursor(2, baseline);
   u8g2.print(dbg);
 }
 
-// Central band: BIG number (U8g2 58px) right‑justified to F/B (GFX 12pt).
+// Central band: BIG number (u8g2) right‑justified to F/B (GFX).
 static void drawMainBand(bool fullPass) {
   const int16_t W = display.width();
   const int16_t H = display.height();
 
   // Texts
-  char bigBuf[16];
+  char bigBuf[4];
   if (isStale()) strcpy(bigBuf, "---");
   else snprintf(bigBuf, sizeof(bigBuf), "%u", (unsigned)gCenterY);
 
-  char fBuf[8] = "", bBuf[8] = "";
+  char fBuf[4] = "", bBuf[4] = "";
   bool showFB = gHasFB && !isStale();
   if (showFB) { snprintf(fBuf, sizeof(fBuf), "%u", (unsigned)gFrontY);
                 snprintf(bBuf, sizeof(bBuf), "%u", (unsigned)gBackY); }
 
-  // Margins & band dims
-  const int16_t leftSafe  = 36; // leave header untouched
-  const int16_t rightMarg = 6;
-
-  // Measure right column (GFX 12pt)
-  display.setFont(&FreeSansBold12pt7b);
+  // Measure right column with label font
+  useLabelFont();
   int16_t x1,y1; uint16_t fW=0,fH=0,bW=0,bH=0;
   if (showFB) {
     display.getTextBounds(fBuf, 0, 0, &x1, &y1, &fW, &fH);
     display.getTextBounds(bBuf, 0, 0, &x1, &y1, &bW, &bH);
   }
   const uint16_t rightColW = showFB ? max(fW, bW) : 0;
-  const uint16_t rightColH = showFB ? (fH + 6 + bH) : 0;
+  const uint16_t rightColH = showFB ? (fH + UI::FB_STACK_GAP + bH) : 0;
 
-  // Measure BIG number in U8g2 font
-  u8g2.setFont(BIG_NUM_FONT);
+  // Measure BIG with current U8g2 font
+  u8g2.setFont(UI_FONT->u8g2_big);
   int bigW = u8g2.getUTF8Width(bigBuf);
   int bigAscent = u8g2.getFontAscent();
   int bigDescent = u8g2.getFontDescent(); // negative
   int bigH = bigAscent - bigDescent;
 
-  // Band sizing (based on big + some padding)
-  const int16_t bandH = max<int16_t>(bigH + 20, 110);
+  // Band sizing & position
+  const int16_t bandH = max<int16_t>(bigH + UI::BAND_PAD_V, UI::BAND_MIN_H);
   const int16_t bandY = (H - bandH) / 2;
-  const int16_t bandX = leftSafe;
-  const int16_t bandW = W - leftSafe - 2;
-
+  const int16_t bandX = UI::LEFT_SAFE;
+  const int16_t bandW = W - UI::LEFT_SAFE - 2;
   if (!fullPass) display.setPartialWindow(bandX, bandY, bandW, bandH);
 
   display.firstPage();
   do {
-    // Clear band
     display.fillRect(bandX, bandY, bandW, bandH, GxEPD_WHITE);
 
     // Right column anchor
-    const int16_t rightX = W - rightMarg;
-    const int16_t gap = showFB ? 10 : 0;
+    const int16_t rightX = W - UI::RIGHT_MARG;
     const int16_t rightColLeft = showFB ? (rightX - (int)rightColW) : rightX;
 
-    // BIG number right‑justified to the left edge of the right column
-    int16_t bigRight = rightColLeft - gap;
+    // Big number right‑justified to rightColLeft - GAP_FB
+    int16_t bigRight = rightColLeft - (showFB ? UI::GAP_FB : 0);
     int16_t bigLeft  = bigRight - bigW;
-    if (bigLeft < bandX + 4) { // don’t crowd the header
-      bigLeft = bandX + 4;
-      bigRight = bigLeft + bigW;
-    }
+    if (bigLeft < bandX + 4) { bigLeft = bandX + 4; bigRight = bigLeft + bigW; }
 
-    // Vertical centering using font ascent/descent
+    // Vertical centering using ascent/descent
     int16_t bigBaseline = bandY + (bandH + bigH) / 2 - 4;
 
-    // Draw BIG number (U8g2)
+    // Draw BIG
     u8g2.setForegroundColor(GxEPD_BLACK);
     u8g2.setBackgroundColor(GxEPD_WHITE);
-    u8g2.setFont(BIG_NUM_FONT);
+    u8g2.setFont(UI_FONT->u8g2_big);
     u8g2.setCursor(bigLeft, bigBaseline);
     u8g2.print(bigBuf);
 
-    // Draw F/B (GFX 12pt), right-aligned to the screen edge
+    // Draw F/B column (slightly nudged up)
     if (showFB) {
-      display.setFont(&FreeSansBold12pt7b);
-      const int16_t colTop = bigBaseline - (int)rightColH / 2;
+      useLabelFont();
+      const int16_t colTop = bigBaseline - (int)rightColH / 2 - UI::FB_NUDGE_UP;
       display.setCursor(rightX - (int)fW, colTop);
       display.print(fBuf);
-      display.setCursor(rightX - (int)bW, colTop + (int)fH + 6);
+      display.setCursor(rightX - (int)bW, colTop + (int)fH + UI::FB_STACK_GAP);
       display.print(bBuf);
     }
   } while (display.nextPage());
 }
 
-static void drawScreen(bool forceFull=false) {
+static void drawScreen(bool forceFull) {
   const uint32_t now = millis();
   if (!forceFull && (now - lastDrawMs) < CFG_MIN_REDRAW_MS) return;
 
-  // Full vs partial
   const bool canPartial = display.epd2.hasPartialUpdate;
   bool doFull = forceFull;
   if (!doFull) {
@@ -340,15 +392,16 @@ static void drawScreen(bool forceFull=false) {
     display.setFullWindow();
     display.firstPage();
     do {
-      display.fillScreen(GxEPD_WHITE);
-      drawHoleHeader();      // top-left
+      display.fillScreen(GxEPD_WHITE);      
       drawMainBand(true);    // center/right
-      drawDebugLine();       // bottom-left (no clipping)
+      drawDebugLine();       // bottom-left (if enabled)
+      drawHoleHeader();      // left strip
     } while (display.nextPage());
     lastFullRefreshMs = now;
     partialCount = 0;
   } else {
-    drawMainBand(false);     // partial band only
+    // Partial band only, header untouched
+    drawMainBand(false);
     partialCount++;
   }
 
@@ -358,26 +411,24 @@ static void drawScreen(bool forceFull=false) {
   lastDrawnStale  = isStale();
 }
 
-// ---------- Setup / loop ----------
+// ==================== Setup / Loop ====================
 void setup() {
   Serial.begin(115200);
-  Serial.println("\nYardage e‑Paper (BLE) — U8g2 big digits, right‑justified, no bottom clipping");
+  Serial.println("\nYardage EPD (BLE) — LOGI72 big digits, right-justified, header restored, F/B nudged up");
 
-  // SPI / E‑paper
   SPI.begin(EPD_SCLK, EPD_MISO, EPD_MOSI, EPD_CS);
+
   display.init(115200);
   display.setRotation(1);
   display.setTextColor(GxEPD_BLACK);
 
-  // U8g2 bridge
-  u8g2.begin(display);  // attach to Adafruit_GFX target
+  u8g2.begin(display); // attach U8g2 to GFX target
 
-  // First full draw
   drawScreen(true);
 
-  // BLE
   NimBLEDevice::init("Yardage-EPD");
   NimBLEDevice::setPower(ESP_PWR_LVL_P7);
+
   NimBLEServer* server = NimBLEDevice::createServer();
   server->setCallbacks(new ServerCallbacks());
   NimBLEService* svc = server->createService(SERVICE_UUID);
@@ -405,17 +456,18 @@ void setup() {
 }
 
 void loop() {
-  // Serial toggle for debug
   if (Serial.available()) {
     int ch = Serial.read();
     if (ch == 'd' || ch == 'D') { debugMode = !debugMode; drawScreen(true); }
+    if (ch == '1') { UI_FONT = &FONTSET_LOGI92; drawScreen(true); }
+    if (ch == '2') { UI_FONT = &FONTSET_BOLD49; drawScreen(true); }
+    if (ch == '3') { UI_FONT = &FONTSET_BOLD42; drawScreen(true); }
+    if (ch == '4') { UI_FONT = &FONTSET_BOLD42; drawScreen(true); }
   }
 
-  // Redraw on stale/fresh boundary change
   bool staleNow = isStale();
   if (staleNow != lastDrawnStale) markDirtyIfNeeded(false);
 
-  // Periodic full refresh to clear ghosting
   const uint32_t now = millis();
   if ((now - lastFullRefreshMs) > 120000) drawScreen(true);
 
