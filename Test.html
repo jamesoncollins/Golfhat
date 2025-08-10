@@ -7,26 +7,26 @@
   <link rel="preconnect" href="https://unpkg.com">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
-    :root { --headerH: 128px; }
+    :root { --headerH: 140px; }
     html, body { height:100%; margin:0; background:#0b0f14; color:#e9eef3; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
     #map { position:absolute; top:var(--headerH); left:0; right:0; bottom:0; }
     header { position:fixed; top:0; left:0; right:0; display:flex; flex-wrap:wrap; gap:8px 10px; padding:8px 12px; background:#111823; border-bottom:1px solid #1f2937; z-index:1000; }
     header .btn { background:#1f2937; color:#e9eef3; border:1px solid #2b3b50; padding:8px 10px; border-radius:10px; font-weight:700; font-size:14px; }
     header input, header select { background:#0e1520; color:#e9eef3; border:1px solid #233044; border-radius:8px; padding:6px 8px; }
-    header select { min-width: 200px; }
+    header select { min-width: 180px; }
     .row { display:flex; gap:10px; align-items:center; width:100%; }
     .row small { opacity:.8; }
     #yardage { position:fixed; bottom:12px; left:12px; right:12px; z-index:1000; background:#0e1520cc; backdrop-filter: blur(6px); border:1px solid #1f2937; border-radius:14px; padding:10px 12px; display:flex; align-items:center; justify-content:space-between; }
     #yardage .big { font-size:28px; font-weight:800; letter-spacing:0.5px; }
-    #yardage .small { font-size:12px; opacity:0.8; }
+    #yardage .small { font-size:12px; opacity:0.9; }
     .pill { display:inline-block; padding:2px 8px; border:1px solid #2b3b50; border-radius:999px; font-size:12px; margin-left:6px; }
     .legend { position:fixed; right:12px; top:calc(var(--headerH) + 12px); background:#0e1520cc; border:1px solid #1f2937; border-radius:10px; padding:6px 8px; z-index:1000; font-size:12px; }
     .legend div { margin:4px 0; }
     label { font-size:12px; opacity:.9; }
-    @media (max-width: 520px) {
+    @media (max-width: 560px) {
       header .btn { padding:6px 8px; font-size:12px; }
-      header input { width: 170px; }
-      header select { min-width: 160px; }
+      header input { width: 160px; }
+      header select { min-width: 150px; }
     }
   </style>
 </head>
@@ -37,6 +37,11 @@
       <button id="loadBtn" class="btn">Load</button>
       <button id="followBtn" class="btn">Follow: ON</button>
       <button id="debugBtn" class="btn">Debug: OFF</button>
+
+      <select id="methodSelect" title="F/C/B method">
+        <option value="ray">Ray via centroid</option>
+        <option value="perimeter">Perimeter scan</option>
+      </select>
 
       <select id="courseSelect" title="Fly to course">
         <option value="">— Fly to course —</option>
@@ -56,7 +61,7 @@
       <label>Service:&nbsp;<input id="svcUuid" value="0000f00d-0000-1000-8000-00805f9b34fb"></label>
       <label>Char:&nbsp;<input id="chrUuid" value="0000f00e-0000-1000-8000-00805f9b34fb"></label>
       <label><input type="checkbox" id="asciiMode"> ASCII</label>
-      <small>(Big number = center. F/B uses green boundary.)</small>
+      <small>(Center = distance to green centroid. F/B per selected method.)</small>
     </div>
   </header>
 
@@ -64,8 +69,9 @@
 
   <div id="yardage">
     <div>
-      <div class="small">Hole <span id="holeRef">—</span></div>
-      <div class="big"><span id="ydCenter">—</span> yd <span id="fb" class="small" style="display:none">(<span id="ydF">—</span> F / <span id="ydB">—</span> B)</span></div>
+      <div class="small">Hole <span id="holeRef">—</span> · <span id="methodLabel">ray</span></div>
+      <div class="big"><span id="ydCenter">—</span> yd</div>
+      <div class="small" id="trioRow" style="margin-top:4px; display:none">Front <span id="ydF">—</span> · Center <span id="ydC">—</span> · Back <span id="ydB">—</span></div>
       <div class="small" id="locStatus">Waiting for location…</div>
     </div>
     <div>
@@ -80,14 +86,14 @@
     <div><span style="display:inline-block;width:10px;height:10px;background:#f59e0b;border-radius:2px;margin-right:6px"></span> Tee</div>
     <div><span style="display:inline-block;width:10px;height:10px;background:#ef4444;border-radius:2px;margin-right:6px"></span> You</div>
     <div><span style="display:inline-block;width:10px;height:10px;background:#22c55e;border-radius:2px;margin-right:6px"></span> Front point</div>
+    <div><span style="display:inline-block;width:10px;height:10px;background:#3b82f6;border-radius:2px;margin-right:6px"></span> Center (centroid)</div>
     <div><span style="display:inline-block;width:10px;height:10px;background:#f97316;border-radius:2px;margin-right:6px"></span> Back point</div>
-    <div><span style="display:inline-block;width:10px;height:10px;background:#00e5ff;border-radius:2px;margin-right:6px"></span> Debug lines</div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
   <script>
-    // --- dynamic layout so the map always sits under the header ---
+    // --- layout so map sits under header ---
     const hdr = document.getElementById('hdr');
     const layout = () => document.documentElement.style.setProperty('--headerH', hdr.offsetHeight + 'px');
     new ResizeObserver(layout).observe(hdr); window.addEventListener('load', layout);
@@ -106,9 +112,10 @@
     const debugGroup = L.layerGroup().addTo(map);
 
     let debugOn = false;
-    document.getElementById('debugBtn').onclick = () => {
+    const debugBtn = document.getElementById('debugBtn');
+    debugBtn.onclick = () => {
       debugOn = !debugOn;
-      document.getElementById('debugBtn').textContent = 'Debug: ' + (debugOn ? 'ON' : 'OFF');
+      debugBtn.textContent = 'Debug: ' + (debugOn ? 'ON' : 'OFF');
       if (!debugOn) debugGroup.clearLayers();
     };
 
@@ -117,7 +124,9 @@
       follow = !follow;
       document.getElementById('followBtn').textContent = `Follow: ${follow? 'ON' : 'OFF'}`;
     };
-    document.getElementById('locBtn').onclick = () => { if (lastPos) map.setView([lastPos.coords.latitude, lastPos.coords.longitude], 16, { animate:true }); };
+    document.getElementById('locBtn').onclick = () => {
+      if (lastPos) map.setView([lastPos.coords.latitude, lastPos.coords.longitude], 16, { animate:true });
+    };
 
     function setStatus(msg) { document.getElementById('status').textContent = msg; }
     function setLocStatus(msg) { document.getElementById('locStatus').textContent = msg; }
@@ -204,45 +213,55 @@ out body;`
       return best ? best.f : null;
     }
 
-    function pickGreenForHole(hole) {
-      if (!course || !course.greens?.length) return null;
-      const coords = hole.geometry.coordinates;
-      const end = coords[coords.length - 1];
-      const endPt = turf.point(end);
-      let best=null;
-      for (const g of course.greens) {
-        const c = turf.centroid(g);
-        const d = turf.distance(c, endPt, { units:'meters' });
-        if (!best || d < best.d) best = { g, d };
-      }
-      return best ? best.g : null;
+    // ---------- Method A: Ray via centroid ----------
+    function calcFCB_ray(green, mePoint) {
+      try {
+        const centroid = turf.centroid(green);
+        const Cyd = turf.distance(mePoint, centroid, {units:'meters'}) * 1.0936133;
+
+        const brg = turf.bearing(mePoint, centroid);
+        const far = turf.destination(mePoint, 2, brg, { units:'kilometers' });
+        let ray = turf.lineString([mePoint.geometry.coordinates, far.geometry.coordinates]);
+        const boundary = turf.polygonToLine(green);
+        let inter = turf.lineIntersect(ray, boundary);
+        if (inter.features.length < 1) return { Cyd };
+
+        // sort intersections by distance from me
+        const pts = inter.features.map(pt=>pt.geometry.coordinates).sort((a,b)=>
+          turf.distance(mePoint, turf.point(a), {units:'meters'}) -
+          turf.distance(mePoint, turf.point(b), {units:'meters'})
+        );
+        const Fpt = pts[0], Bpt = pts[pts.length - 1];
+        const Fyd = turf.distance(mePoint, turf.point(Fpt), {units:'meters'}) * 1.0936133;
+        const Byd = turf.distance(mePoint, turf.point(Bpt), {units:'meters'}) * 1.0936133;
+
+        return { Fyd, Cyd, Byd, Fpt, Cpt: centroid.geometry.coordinates, Bpt, _ray: ray.geometry.coordinates };
+      } catch { return null; }
     }
 
-    // ----- New robust F/B: perimeter scan -----
-    function frontBackPerimeter(green, mePoint) {
+    // ---------- Method B: Perimeter scan ----------
+    function calcFCB_perimeter(green, mePoint) {
       try {
-        const boundary = turf.flatten(turf.polygonToLine(green)); // FeatureCollection of LineStrings
-        let frontPt = null, minM = Infinity;
-        let backPt = null,  maxM = -Infinity;
+        const centroid = turf.centroid(green);
+        const Cyd = turf.distance(mePoint, centroid, {units:'meters'}) * 1.0936133;
+
+        const boundary = turf.flatten(turf.polygonToLine(green)); // FC of LineStrings
+        let Fpt = null, Bpt = null, minM = Infinity, maxM = -Infinity;
 
         for (const feat of boundary.features) {
-          // Nearest point ON LINE for front
+          // closest point on segment for Front
           const near = turf.nearestPointOnLine(feat, mePoint);
           const dm = turf.distance(mePoint, near, { units:'meters' });
-          if (dm < minM) { minM = dm; frontPt = near.geometry.coordinates; }
-
-          // Farthest vertex for back (simple & robust)
+          if (dm < minM) { minM = dm; Fpt = near.geometry.coordinates; }
+          // farthest vertex for Back (simple & robust)
           for (const c of feat.geometry.coordinates) {
             const dv = turf.distance(mePoint, turf.point(c), { units:'meters' });
-            if (dv > maxM) { maxM = dv; backPt = c; }
+            if (dv > maxM) { maxM = dv; Bpt = c; }
           }
         }
-        if (!frontPt || !backPt) return null;
-        return {
-          Fyd: minM * 1.0936133,
-          Byd: maxM * 1.0936133,
-          frontPt, backPt
-        };
+        const Fyd = minM * 1.0936133;
+        const Byd = maxM * 1.0936133;
+        return { Fyd, Cyd, Byd, Fpt, Cpt: centroid.geometry.coordinates, Bpt };
       } catch { return null; }
     }
 
@@ -285,6 +304,20 @@ out body;`
     document.getElementById('pingBtn').onclick = ()=> sendBLE(99,321);
 
     // ===== Update loop =====
+    function pickGreenForHole(hole) {
+      if (!course || !course.greens?.length) return null;
+      const coords = hole.geometry.coordinates;
+      const end = coords[coords.length - 1];
+      const endPt = turf.point(end);
+      let best=null;
+      for (const g of course.greens) {
+        const c = turf.centroid(g);
+        const d = turf.distance(c, endPt, { units:'meters' });
+        if (!best || d < best.d) best = { g, d };
+      }
+      return best ? best.g : null;
+    }
+
     function updateYardage() {
       if (!lastPos || !course) return;
       const lat = lastPos.coords.latitude, lon = lastPos.coords.longitude;
@@ -292,48 +325,66 @@ out body;`
 
       const hole = nearestHoleFeature(lat, lon);
       if (!hole) { setStatus('No hole geometry nearby'); return; }
+      const green = pickGreenForHole(hole);
 
-      const green = (course.greens||[]).length ? pickGreenForHole(hole) : null;
+      const method = document.getElementById('methodSelect').value;
+      document.getElementById('methodLabel').textContent = method;
 
-      // Big number = distance to centroid (center)
-      const centroid = green ? turf.centroid(green) : null;
-      let centerYd;
-      if (centroid) {
-        centerYd = turf.distance(me, centroid, {units:'meters'}) * 1.0936133;
+      let FCB = null;
+      if (green) {
+        FCB = (method === 'perimeter') ? calcFCB_perimeter(green, me) : calcFCB_ray(green, me);
       } else {
+        // fallback to centerline end if no green polygon
         const snapped = turf.nearestPointOnLine(hole, me);
         const lineEnd = turf.point(hole.geometry.coordinates.at(-1));
-        centerYd = turf.length(turf.lineSlice(snapped, lineEnd, hole), {units:'meters'}) * 1.0936133;
+        const Cyd = turf.length(turf.lineSlice(snapped, lineEnd, hole), {units:'meters'}) * 1.0936133;
+        FCB = { Fyd: Cyd, Cyd, Byd: Cyd };
       }
 
+      // UI updates
       const holeRef = parseInt(hole.properties.ref||'0') || 0;
-      const yds = Math.round(centerYd);
-      document.getElementById('ydCenter').textContent = isFinite(yds) ? yds : '—';
       document.getElementById('holeRef').textContent = holeRef || '?';
 
-      // Front/Back from perimeter
-      const fb = green ? frontBackPerimeter(green, me) : null;
-      const fbBox = document.getElementById('fb');
-      if (fb && isFinite(fb.Fyd) && isFinite(fb.Byd)) {
-        fbBox.style.display = 'inline';
-        document.getElementById('ydF').textContent = Math.round(fb.Fyd);
-        document.getElementById('ydB').textContent = Math.round(fb.Byd);
-      } else {
-        fbBox.style.display = 'none';
-      }
+      if (FCB && isFinite(FCB.Cyd)) {
+        const yds = Math.round(FCB.Cyd);
+        document.getElementById('ydCenter').textContent = yds;
+        document.getElementById('ydC').textContent = yds;
+        document.getElementById('trioRow').style.display = 'block';
+        if (isFinite(FCB.Fyd)) document.getElementById('ydF').textContent = Math.round(FCB.Fyd);
+        if (isFinite(FCB.Byd)) document.getElementById('ydB').textContent = Math.round(FCB.Byd);
 
+        // BLE send the center value
+        if (bleChar) sendBLE(holeRef, yds);
+      } else {
+        document.getElementById('ydCenter').textContent = '—';
+        document.getElementById('trioRow').style.display = 'none';
+      }
       setLocStatus('Tracking…');
 
-      // Debug overlays
+      // Debug overlay
       debugGroup.clearLayers();
-      if (debugOn && fb) {
+      if (debugOn && FCB) {
         const meLL = [lat, lon];
-        if (fb.frontPt) L.polyline([meLL, [fb.frontPt[1], fb.frontPt[0]]], { color:'#22c55e', weight:2 }).addTo(debugGroup);
-        if (fb.backPt)  L.polyline([meLL, [fb.backPt[1],  fb.backPt[0]]], { color:'#f97316', weight:2, dashArray:'6,4' }).addTo(debugGroup);
+        if (FCB.Fpt) {
+          L.polyline([meLL, [FCB.Fpt[1], FCB.Fpt[0]]], { color:'#22c55e', weight:2 }).addTo(debugGroup);
+          L.circleMarker([FCB.Fpt[1], FCB.Fpt[0]], { radius:6, color:'#22c55e', weight:2, fillColor:'#22c55e', fillOpacity:0.9 }).addTo(debugGroup).bindTooltip('Front');
+        }
+        if (FCB.Cpt) {
+          L.circleMarker([FCB.Cpt[1], FCB.Cpt[0]], { radius:5, color:'#3b82f6', weight:2, fillColor:'#3b82f6', fillOpacity:0.9 }).addTo(debugGroup).bindTooltip('Center');
+        }
+        if (FCB.Bpt) {
+          L.polyline([meLL, [FCB.Bpt[1], FCB.Bpt[0]]], { color:'#f97316', weight:2, dashArray:'6,4' }).addTo(debugGroup);
+          L.circleMarker([FCB.Bpt[1], FCB.Bpt[0]], { radius:6, color:'#f97316', weight:2, fillColor:'#f97316', fillOpacity:0.9 }).addTo(debugGroup).bindTooltip('Back');
+        }
+        if (FCB._ray) {
+          const rayLatLngs = FCB._ray.map(([x,y])=>[y,x]);
+          L.polyline(rayLatLngs, { color:'#00e5ff', weight:2, opacity:0.8, dashArray:'2,4' }).addTo(debugGroup);
+        }
       }
 
-      // Push to BLE
-      if (bleChar && isFinite(yds)) sendBLE(holeRef, yds);
+      // Projected point on hole centerline (just a helper marker)
+      const snapped = turf.nearestPointOnLine(hole, me);
+      projIcon.setLatLng([snapped.geometry.coordinates[1], snapped.geometry.coordinates[0]]).addTo(map);
     }
 
     // Fly-to courses
@@ -343,7 +394,6 @@ out body;`
       const [latS, lonS, zoomS] = sel.split(',');
       const lat = parseFloat(latS), lon = parseFloat(lonS), zoom = parseInt(zoomS||'16',10);
       map.flyTo([lat, lon], zoom, { animate:true });
-      // also set a fake position so you can test without GPS at that spot
       onPos({ coords: { latitude: lat, longitude: lon, accuracy: 5, speed: 0 } });
       loadCourseAround(lat, lon).catch(e=>setStatus(e.message||String(e)));
     };
