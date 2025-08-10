@@ -28,6 +28,7 @@ U8G2_FOR_ADAFRUIT_GFX u8g2;
 static const BLEUUID SERVICE_UUID      ("0000f00d-0000-1000-8000-00805f9b34fb");
 static const BLEUUID CHAR_UUID_YARDAGE ("0000f00e-0000-1000-8000-00805f9b34fb"); // yardage
 static const BLEUUID CHAR_UUID_CONTROL ("0000f00f-0000-1000-8000-00805f9b34fb"); // control
+static const BLEUUID CHAR_UUID_IMAGE   ("0000f010-0000-1000-8000-00805f9b34fb"); // image
 
 // ==================== UI PARAMS (fonts, spacing) ====================
 struct FontSet {
@@ -38,42 +39,46 @@ struct FontSet {
   const char*    name;
 };
 
-// Presets (digits-only *_tn where applicable)
 static FontSet FONTSET_LOGI92 = {
-  u8g2_font_logisoso92_tn, // BIG: very tall/condensed ~92 px
-  u8g2_font_fub20_tn,      // F/B: bold ~20 px
+  u8g2_font_logisoso92_tn, // BIG: tall/condensed ~92 px (digits-only)
+  u8g2_font_fub20_tn,      // F/B: bold ~20 px (digits-only)
   &FreeSansBold12pt7b,     // HOLE label
   nullptr,
   "LOGI92"
 };
-static FontSet FONTSET_BOLD49 = {
+static FontSet FONTSET_FUB49 = {
   u8g2_font_fub49_tn,
   u8g2_font_fub20_tn,
   &FreeSansBold12pt7b,
   nullptr,
-  "BOLD49"
+  "FUB49"
 };
-static FontSet FONTSET_BOLD42 = {
+static FontSet FONTSET_FUB42 = {
   u8g2_font_fub42_tn,
   u8g2_font_fub20_tn,
   &FreeSansBold12pt7b,
   nullptr,
-  "BOLD42"
+  "FUB42"
 };
 
-// Default set
+// Default
 static FontSet* UI_FONT = &FONTSET_LOGI92;
 
 // Spacing & layout
 namespace UI {
-  static int LEFT_SAFE    = 70;  // preserve HOLE block
+  static int LEFT_SAFE    = 70;  // byte-aligned guard for HOLE strip (fits ~70px image + padding)
   static int RIGHT_MARG   = 6;   // right screen padding
-  static int GAP_FB       = 10;  // gap between BIG and F/B
+  static int GAP_FB       = 14;  // gap between BIG and F/B (was 10)
   static int FB_STACK_GAP = 6;   // gap within F/B stack
-  static int BAND_PAD_V   = 20;  // extra vertical pad (reduce to 10 if height tight)
+  static int BAND_PAD_V   = 20;  // extra vertical pad
   static int BAND_MIN_H   = 110; // min band height
   static int DEBUG_PAD_B  = 2;   // debug baseline bottom pad
-  static int FB_NUDGE_UP  = 4;   // raise F/B a bit
+  static int FB_NUDGE_UP  = 2;   // was 4; centers the stack a touch better
+
+  // Left-strip layout
+  static int HOLE_LABEL_Y = 18;  // baseline for "HOLE"
+  static int HOLE_NUM_Y   = 36;  // baseline for number
+  static int IMG_TOP_PAD  = 6;   // gap below HOLE number
 }
 
 // ==================== Config (runtime via CFG) ====================
@@ -84,9 +89,10 @@ static uint16_t CFG_EPSILON_YD    = 2;     // ignore small changes
 // ==================== State ====================
 static NimBLECharacteristic* gCharYardage = nullptr;
 static NimBLECharacteristic* gCharControl = nullptr;
+static NimBLECharacteristic* gCharImage   = nullptr;
 
 static bool     debugMode         = false; // on-screen debug line
-static bool     serialDebug       = true;  // verbose serial logging (toggle via SERDBG)
+static bool     serialDebug       = true;  // verbose serial logging
 static bool     bleConnected      = false;
 static uint8_t  gHole             = 0;
 static uint16_t gCenterY          = 0;
@@ -106,8 +112,9 @@ static uint16_t lastDrawnCenter   = 65535;
 static bool     lastDrawnStale    = true;
 
 // Dirty flags — ONLY loop() calls drawScreen()
-static volatile bool gDirty     = false; // band needs redraw
-static volatile bool gDirtyFull = false; // force full (hole change / layout / etc.)
+static volatile bool gDirty        = false; // band needs redraw
+static volatile bool gDirtyFull    = false; // force full (hole change / layout / etc.)
+static volatile bool gDirtyLeftImg = false; // left image needs redraw
 
 // ---------- Debug helper ----------
 static inline void D(const char* fmt, ...) {
@@ -117,6 +124,31 @@ static inline void D(const char* fmt, ...) {
   vsnprintf(buf, sizeof(buf), fmt, ap);
   va_end(ap);
   Serial.printf("[%9lu] %s\n", (unsigned long)millis(), buf);
+}
+
+// ==================== Image buffers ====================
+// Final raster used for drawing (packed MSB, row-major)
+static uint8_t* gImgBuf   = nullptr;
+static size_t   gImgBytes = 0;
+static uint16_t gImgW     = 0;
+static uint16_t gImgH     = 0;
+static int16_t  gImgX     = 2;   // relative to left strip
+static int16_t  gImgY     = 0;   // filled after header
+static bool     gImgInvert= false;
+
+// Temporary GHIM receive buffer/state
+static uint8_t* ghimBuf   = nullptr;
+static size_t   ghimNeed  = 0;
+static size_t   ghimRecv  = 0;
+static bool     ghimActive= false;
+
+static void freeImageBuf() {
+  if (gImgBuf) { free(gImgBuf); gImgBuf = nullptr; }
+  gImgBytes = 0; gImgW = gImgH = 0; gImgX = 2; gImgY = 0; gImgInvert = false;
+}
+static void freeGHIM() {
+  if (ghimBuf) { free(ghimBuf); ghimBuf = nullptr; }
+  ghimNeed = ghimRecv = 0; ghimActive = false;
 }
 
 // ==================== Helpers ====================
@@ -187,8 +219,8 @@ static void handleControlCommand(const std::string& s) {
 
   if (u.startsWith("FONTSET=")) {
     if      (u.endsWith("LOGI92")) UI_FONT = &FONTSET_LOGI92;
-    else if (u.endsWith("BOLD49")) UI_FONT = &FONTSET_BOLD49;
-    else if (u.endsWith("BOLD42")) UI_FONT = &FONTSET_BOLD42;
+    else if (u.endsWith("FUB49"))  UI_FONT = &FONTSET_FUB49;
+    else if (u.endsWith("FUB42"))  UI_FONT = &FONTSET_FUB42;
     D("FONTSET=%s", UI_FONT->name);
     gDirtyFull = true; gDirty = true;
     return;
@@ -287,7 +319,166 @@ class YardageCallbacks : public NimBLECharacteristicCallbacks {
   }
 };
 
-// ==================== Drawing helpers (no page loops here) ====================
+// --------- Image RX characteristic (supports GHIM and legacy) ---------
+static bool parseAndInstallGHIM(); // fwd
+
+class ImageCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* c) override {
+    std::string v = c->getValue();
+    if (v.empty()) return;
+
+    // ----- BEGIN/END framing for GHIM -----
+    if (v.rfind("TOPIC:GREENIMG", 0) == 0) {
+      if (v.find("BEGIN") != std::string::npos) {
+        int W=0,H=0,X=0,Y=0,FLAGS=0,STRIDE=0,LEN=0;
+        sscanf(v.c_str(),
+               "TOPIC:GREENIMG BEGIN W=%d H=%d X=%d Y=%d FLAGS=%d STRIDE=%d LEN=%d",
+               &W,&H,&X,&Y,&FLAGS,&STRIDE,&LEN);
+        if (LEN <= 0) { D("IMG BEGIN parse failed: '%s'", v.c_str()); return; }
+        freeGHIM();
+        ghimBuf = (uint8_t*)malloc(LEN);
+        if (!ghimBuf) { D("IMG GHIM alloc failed (%d bytes)", LEN); return; }
+        ghimNeed = LEN; ghimRecv = 0; ghimActive = true;
+        D("IMG GHIM BEGIN need=%d bytes", LEN);
+        return;
+      }
+      if (v.find("END") != std::string::npos) {
+        D("IMG GHIM END recv=%u need=%u", (unsigned)ghimRecv, (unsigned)ghimNeed);
+        if (ghimActive && ghimRecv == ghimNeed) {
+          if (parseAndInstallGHIM()) gDirtyLeftImg = true;
+        }
+        freeGHIM();
+        return;
+      }
+      return;
+    }
+
+    // ----- GHIM binary chunk -----
+    if (ghimActive && ghimBuf && ghimRecv < ghimNeed) {
+      size_t n = v.size();
+      if (n > (ghimNeed - ghimRecv)) n = ghimNeed - ghimRecv;
+      memcpy(ghimBuf + ghimRecv, v.data(), n);
+      ghimRecv += n;
+      if (ghimRecv == ghimNeed) {
+        D("IMG GHIM complete (%u bytes)", (unsigned)ghimNeed);
+        if (parseAndInstallGHIM()) gDirtyLeftImg = true;
+        freeGHIM();
+      }
+      return;
+    }
+
+    // ----- Legacy header: "IMG W=.. H=.." then raw bytes -----
+    if (v.size() >= 3 && v[0]=='I' && v[1]=='M' && v[2]=='G') {
+      int w=0, h=0;
+      if (sscanf(v.c_str(), "IMG W=%d H=%d", &w, &h) != 2) {
+        sscanf(v.c_str(), "IMG H=%d W=%d", &h, &w);
+      }
+      if (w<=0 || h<=0) { D("IMG legacy header parse failed: '%s'", v.c_str()); return; }
+      int maxW = UI::LEFT_SAFE - 4;
+      int baseY = UI::HOLE_NUM_Y + UI::IMG_TOP_PAD;
+      int maxH = display.height() - baseY - 2;
+      w = min(w, maxW);
+      h = min(h, maxH);
+      size_t stride = (w + 7) / 8;
+      size_t need   = stride * (size_t)h;
+
+      freeImageBuf();
+      gImgBuf = (uint8_t*)malloc(need);
+      if (!gImgBuf) { D("IMG legacy alloc failed (%u bytes)", (unsigned)need); return; }
+      gImgW = w; gImgH = h; gImgBytes = need; gImgX = 2; gImgY = baseY;
+      gImgInvert = false;
+      memset(gImgBuf, 0x00, gImgBytes);
+      D("IMG legacy header OK: W=%d H=%d bytes=%u", w, h, (unsigned)need);
+      return;
+    }
+
+    // Legacy raw chunk (after IMG header)
+    if (gImgBuf && gImgBytes) {
+      static size_t legacyRecv = 0;
+      size_t n = v.size();
+      if (legacyRecv + n > gImgBytes) n = gImgBytes - legacyRecv;
+      memcpy(gImgBuf + legacyRecv, v.data(), n);
+      legacyRecv += n;
+      if (legacyRecv >= gImgBytes) {
+        D("IMG legacy complete.");
+        legacyRecv = 0;
+        gDirtyLeftImg = true;
+      }
+      return;
+    }
+
+    D("IMG data ignored (no header/state).");
+  }
+};
+
+// Parse GHIM blob accumulated in ghimBuf and install into gImgBuf
+static bool parseAndInstallGHIM() {
+  if (!ghimBuf || ghimRecv < 13) { D("GHIM parse: too short"); return false; }
+  if (!(ghimBuf[0]=='G' && ghimBuf[1]=='H' && ghimBuf[2]=='I' && ghimBuf[3]=='M')) {
+    D("GHIM parse: magic mismatch"); return false;
+  }
+  uint16_t srcW = ghimBuf[4] | (ghimBuf[5] << 8);
+  uint16_t srcH = ghimBuf[6] | (ghimBuf[7] << 8);
+  int16_t  offX = (int16_t)(ghimBuf[8] | (ghimBuf[9] << 8));
+  int16_t  offY = (int16_t)(ghimBuf[10] | (ghimBuf[11] << 8));
+  uint8_t  flags= ghimBuf[12];
+  const size_t headerLen = 13;
+
+  size_t srcStride = (srcW + 7) / 8;
+  size_t srcBytes  = srcStride * (size_t)srcH;
+  if (ghimRecv < headerLen + srcBytes) {
+    D("GHIM parse: missing data (%u < %u)", (unsigned)ghimRecv, (unsigned)(headerLen + srcBytes));
+    return false;
+  }
+
+  // Clamp to left-strip box (no auto-rescale; crop if needed)
+  int16_t baseY = UI::HOLE_NUM_Y + UI::IMG_TOP_PAD;
+  int16_t maxW  = UI::LEFT_SAFE - 4;
+  int16_t maxH  = display.height() - baseY - 2;
+
+  uint16_t dstW = srcW;
+  uint16_t dstH = srcH;
+  if (dstW > maxW) dstW = maxW;
+  if (dstH > maxH) dstH = maxH;
+
+  if (offX < 0) offX = 0;
+  if (offX > (int16_t)(maxW - dstW)) offX = maxW - (int16_t)dstW;
+
+  int16_t drawY = baseY + offY;
+  if (drawY < baseY) drawY = baseY;
+  if (drawY > display.height() - (int16_t)dstH - 2) drawY = display.height() - (int16_t)dstH - 2;
+
+  // Allocate destination with its own stride and copy row-by-row using source stride
+  size_t dstStride = (dstW + 7) / 8;
+  size_t dstBytes  = dstStride * (size_t)dstH;
+
+  freeImageBuf();
+  gImgBuf = (uint8_t*)malloc(dstBytes);
+  if (!gImgBuf) { D("GHIM install: alloc fail %u bytes", (unsigned)dstBytes); return false; }
+  memset(gImgBuf, 0x00, dstBytes);
+
+  const uint8_t* src = ghimBuf + headerLen;
+  for (uint16_t row = 0; row < dstH; ++row) {
+    const uint8_t* srcRow = src + row * srcStride;
+    uint8_t*       dstRow = gImgBuf + row * dstStride;
+    memcpy(dstRow, srcRow, dstStride); // left crop only; add bit-shift here if you want horizontal crop offset
+  }
+
+  bool invert = (flags & 0x01) != 0;
+  if (invert) for (size_t i=0; i<dstBytes; ++i) gImgBuf[i] = ~gImgBuf[i];
+
+  gImgW = dstW; gImgH = dstH; gImgX = 2 + offX; gImgY = drawY;
+  gImgBytes = dstBytes; gImgInvert = invert;
+
+  D("GHIM installed: src=%ux%u(stride=%u) -> dst=%ux%u(stride=%u) at (%d,%d) inv=%d",
+    (unsigned)srcW, (unsigned)srcH, (unsigned)srcStride,
+    (unsigned)gImgW, (unsigned)gImgH, (unsigned)dstStride,
+    (int)gImgX, (int)gImgY, (int)gImgInvert);
+
+  return true;
+}
+
+// ==================== Drawing helpers ====================
 struct BandMetrics {
   int16_t bandX, bandY, bandW, bandH;
   int     bigW, bigH;
@@ -322,7 +513,7 @@ static void computeBandMetrics(BandMetrics& M) {
   M.rightColW = M.showFB ? max(M.fW, M.bW) : 0;
   M.rightColH = M.showFB ? (M.fbLineH + UI::FB_STACK_GAP + M.fbLineH) : 0;
 
-  // BIG metrics (U8g2)
+  // BIG metrics — fixed (no auto-shrink)
   u8g2.setFont(UI_FONT->u8g2_big);
   M.bigW = u8g2.getUTF8Width(bigBuf);
   int bigAsc = u8g2.getFontAscent();
@@ -331,10 +522,10 @@ static void computeBandMetrics(BandMetrics& M) {
 
   // ---- Band rect (center the band, but clamp to screen) ----
   int16_t desiredH = max<int16_t>(M.bigH + UI::BAND_PAD_V, UI::BAND_MIN_H);
-  desiredH = min<int16_t>(desiredH, H);          // never taller than screen
+  desiredH = min<int16_t>(desiredH, H);
   M.bandH  = desiredH;
-  M.bandY  = (H - M.bandH) / 2;                  // center
-  if (M.bandY < 0) M.bandY = 0;                  // clamp
+  M.bandY  = (H - M.bandH) / 2;
+  if (M.bandY < 0) M.bandY = 0;
   if (M.bandY + M.bandH > H) M.bandH = H - M.bandY;
 
   M.bandX = UI::LEFT_SAFE;
@@ -346,13 +537,19 @@ static void renderHoleHeader() {
   display.fillRect(0, 0, UI::LEFT_SAFE, display.height(), GxEPD_WHITE);
 
   useLabelFont();
-  display.setCursor(4, 18);
+  display.setCursor(4, UI::HOLE_LABEL_Y);
   display.print("HOLE");
 
   useLabelFont();
-  display.setCursor(4, 36);
+  display.setCursor(4, UI::HOLE_NUM_Y);
   if (gHole) display.print((int)gHole);
   else       display.print("-");
+}
+
+static void renderHoleImage() {
+  if (!gImgBuf || gImgW == 0 || gImgH == 0) return;
+  display.fillRect(0, gImgY - 2, UI::LEFT_SAFE, gImgH + 4, GxEPD_WHITE);
+  display.drawBitmap(gImgX, gImgY, gImgBuf, gImgW, gImgH, GxEPD_BLACK);
 }
 
 static void renderDebugLine() {
@@ -403,7 +600,7 @@ static void renderMainBand(const BandMetrics& M) {
   // Baselines
   int16_t bigBaseline = M.bandY + (M.bandH + M.bigH) / 2 - 4;
 
-  // Draw BIG (U8g2)
+  // Draw BIG (U8g2) with fixed font
   u8g2.setForegroundColor(GxEPD_BLACK);
   u8g2.setBackgroundColor(GxEPD_WHITE);
   u8g2.setFont(UI_FONT->u8g2_big);
@@ -414,11 +611,9 @@ static void renderMainBand(const BandMetrics& M) {
   if (M.showFB) {
     u8g2.setFont(UI_FONT->u8g2_fb);
     const int16_t colTop = bigBaseline - (int)M.rightColH / 2 - UI::FB_NUDGE_UP;
-
     // Front (top)
     u8g2.setCursor(rightX - M.fW, colTop);
     u8g2.print(fBuf);
-
     // Back (bottom)
     u8g2.setCursor(rightX - M.bW, colTop + M.fbLineH + UI::FB_STACK_GAP);
     u8g2.print(bBuf);
@@ -426,6 +621,25 @@ static void renderMainBand(const BandMetrics& M) {
 }
 
 // ==================== drawScreen (single owner of page loops) ====================
+static void drawLeftStripPartial() {
+  // Byte-aligned x window covering full left strip area
+  int16_t ax = 0;
+  int16_t aw = ((UI::LEFT_SAFE + 7) / 8) * 8;
+  if (aw > display.width()) aw = display.width();
+  int16_t ay = 0;
+  int16_t ah = display.height();
+
+  display.setPartialWindow(ax, ay, aw, ah);
+  display.firstPage();
+  do {
+    display.fillRect(0, 0, UI::LEFT_SAFE, display.height(), GxEPD_WHITE);
+    renderHoleHeader();
+    renderHoleImage();
+  } while (display.nextPage());
+
+  gDirtyLeftImg = false;
+}
+
 static void drawScreen(bool forceFull) {
   const uint32_t now = millis();
   uint32_t dtSince = now - lastDrawMs;
@@ -450,20 +664,21 @@ static void drawScreen(bool forceFull) {
       display.fillScreen(GxEPD_WHITE);
       renderMainBand(M);     // center/right
       renderDebugLine();     // bottom-left (if enabled)
-      renderHoleHeader();    // left strip (draw last so it never gets covered)
+      renderHoleHeader();    // left strip text
+      renderHoleImage();     // left strip image (if any)
     } while (display.nextPage());
     lastFullRefreshMs = millis();
     D("DRAW full: done in %lu ms", (unsigned long)(millis() - t0));
   } else {
-    // -------- ALIGN PARTIAL WINDOW to 8-pixel byte boundary and CLAMP Y/H --------
-    int16_t ax = (M.bandX / 8) * 8;                    // x aligned down to byte boundary
-    int16_t ar = ((M.bandX + M.bandW + 7) / 8) * 8;    // right edge aligned up
+    // -------- Partial for the band (center/right) --------
+    int16_t ax = (M.bandX / 8) * 8;                              // x aligned down
+    int16_t ar = ((M.bandX + M.bandW + 7) / 8) * 8;              // right edge aligned up
     if (ar > display.width()) ar = display.width();
     int16_t aw = ar - ax;
-    if (aw < 8) { ax = 0; aw = display.width(); }      // safety
+    if (aw < 8) { ax = 0; aw = display.width(); }                // safety
 
-    // Guard: never let partial window overlap the HOLE strip
-    const int16_t leftGuard = ((UI::LEFT_SAFE + 7) / 8) * 8;  // next multiple of 8 >= LEFT_SAFE
+    // Guard: never let partial window overlap left strip
+    const int16_t leftGuard = ((UI::LEFT_SAFE + 7) / 8) * 8;     // next multiple-of-8 >= LEFT_SAFE
     if (ax < leftGuard) {
       int16_t shift = leftGuard - ax;
       ax = leftGuard;
@@ -474,9 +689,9 @@ static void drawScreen(bool forceFull) {
     int16_t ah = M.bandH;
     if (ay < 0) { ah += ay; ay = 0; }
     if (ay + ah > display.height()) ah = display.height() - ay;
-    if (ah < 8) { ay = 0; ah = display.height(); }     // safety
+    if (ah < 8) { ay = 0; ah = display.height(); }
 
-    D("DRAW partial: bandX=%d bandW=%d -> aligned x=%d w=%d, y=%d h=%d (guard=%d)",
+    D("DRAW partial (band): bandX=%d bandW=%d -> aligned x=%d w=%d, y=%d h=%d (guard=%d)",
       (int)M.bandX, (int)M.bandW, (int)ax, (int)aw, (int)ay, (int)ah, (int)leftGuard);
 
     display.setPartialWindow(ax, ay, aw, ah);
@@ -484,7 +699,12 @@ static void drawScreen(bool forceFull) {
     do {
       renderMainBand(M);
     } while (display.nextPage());
-    D("DRAW partial: done in %lu ms", (unsigned long)(millis() - t0));
+
+    // -------- Partial for left strip image if needed --------
+    if (gDirtyLeftImg) {
+      D("DRAW partial (left image)");
+      drawLeftStripPartial();
+    }
   }
 
   lastDrawMs = millis();
@@ -533,6 +753,12 @@ void setup() {
   );
   gCharControl->setCallbacks(new ControlCallbacks());
 
+  gCharImage = svc->createCharacteristic(
+    CHAR_UUID_IMAGE,
+    NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+  );
+  gCharImage->setCallbacks(new ImageCallbacks());
+
   svc->start();
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
   adv->addServiceUUID(SERVICE_UUID);
@@ -547,8 +773,8 @@ void loop() {
     int ch = Serial.read();
     if (ch == 'd' || ch == 'D') { debugMode = !debugMode; gDirtyFull = true; gDirty = true; D("SER: toggle on-screen debug -> %d", (int)debugMode); }
     if (ch == '1') { UI_FONT = &FONTSET_LOGI92; gDirtyFull = true; gDirty = true; D("SER: font LOGI92"); }
-    if (ch == '2') { UI_FONT = &FONTSET_BOLD49; gDirtyFull = true; gDirty = true; D("SER: font BOLD49"); }
-    if (ch == '3') { UI_FONT = &FONTSET_BOLD42; gDirtyFull = true; gDirty = true; D("SER: font BOLD42"); }
+    if (ch == '2') { UI_FONT = &FONTSET_FUB49; gDirtyFull = true; gDirty = true; D("SER: font FUB49"); }
+    if (ch == '3') { UI_FONT = &FONTSET_FUB42; gDirtyFull = true; gDirty = true; D("SER: font FUB42"); }
   }
 
   const uint32_t now = millis();
@@ -566,13 +792,14 @@ void loop() {
 
   // Respect redraw throttle
   uint32_t dtSince = now - lastDrawMs;
-  if (gDirty && dtSince >= CFG_MIN_REDRAW_MS) {
-    D("Loop: drawing now (dirty=%d full=%d, dt=%lu)", (int)gDirty, (int)gDirtyFull, (unsigned long)dtSince);
+  if ((gDirty || gDirtyLeftImg || gDirtyFull) && dtSince >= CFG_MIN_REDRAW_MS) {
+    D("Loop: drawing now (dirty=%d leftImg=%d full=%d, dt=%lu)", (int)gDirty, (int)gDirtyLeftImg, (int)gDirtyFull, (unsigned long)dtSince);
     drawScreen(gDirtyFull);
     gDirty = false;
     gDirtyFull = false;
-  } else if (gDirty) {
-    D("Loop: waiting throttle (dirty=%d full=%d, dt=%lu < %lu)", (int)gDirty, (int)gDirtyFull, (unsigned long)dtSince, (unsigned long)CFG_MIN_REDRAW_MS);
+    // gDirtyLeftImg is cleared inside drawLeftStripPartial()
+  } else if (gDirty || gDirtyLeftImg || gDirtyFull) {
+    D("Loop: waiting throttle (dirty=%d leftImg=%d full=%d, dt=%lu < %lu)", (int)gDirty, (int)gDirtyLeftImg, (int)gDirtyFull, (unsigned long)dtSince, (unsigned long)CFG_MIN_REDRAW_MS);
   }
 
   delay(10);

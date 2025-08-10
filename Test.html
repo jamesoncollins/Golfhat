@@ -7,109 +7,158 @@
   <link rel="preconnect" href="https://unpkg.com">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
-    :root { --headerH: 200px; }
+    :root { --headerH: 84px; }
     html, body { height:100%; margin:0; background:#0b0f14; color:#e9eef3; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
-    #map { position:absolute; top:var(--headerH); left:0; right:0; bottom:0; }
-    header { position:fixed; top:0; left:0; right:0; display:flex; flex-wrap:wrap; gap:8px 10px; padding:8px 12px; background:#111823; border-bottom:1px solid #1f2937; z-index:1000; }
-    header .btn { background:#1f2937; color:#e9eef3; border:1px solid #2b3b50; padding:8px 10px; border-radius:10px; font-weight:700; font-size:14px; }
-    header input, header select { background:#0e1520; color:#e9eef3; border:1px solid #233044; border-radius:8px; padding:6px 8px; }
-    header input[type="number"]{ width:90px; }
-    header select { min-width: 180px; }
-    .row { display:flex; gap:10px; align-items:center; width:100%; flex-wrap: wrap; }
-    .row small { opacity:.8; }
-    #yardage { position:fixed; bottom:12px; left:12px; right:12px; z-index:1000; background:#0e1520cc; backdrop-filter: blur(6px); border:1px solid #1f2937; border-radius:14px; padding:10px 12px; display:flex; align-items:center; justify-content:space-between; }
-    #yardage .big { font-size:28px; font-weight:800; letter-spacing:0.5px; }
-    #yardage .small { font-size:12px; opacity:0.9; }
-    .pill { display:inline-block; padding:2px 8px; border:1px solid #2b3b50; border-radius:999px; font-size:12px; margin-left:6px; }
-    .legend { position:fixed; right:12px; top:calc(var(--headerH) + 12px); background:#0e1520cc; border:1px solid #1f2937; border-radius:10px; padding:6px 8px; z-index:1000; font-size:12px; }
+
+    /* Layout: fixed header -> map -> bottom bar */
+    #map { position:absolute; top:var(--headerH); left:0; right:0; bottom:64px; }
+
+    header { position:fixed; top:0; left:0; right:0; background:#111823; border-bottom:1px solid #1f2937; z-index:1000; }
+
+    /* Top row: quick actions (left) + status (right) */
+    .toprow { display:flex; align-items:center; gap:8px; padding:6px 10px; }
+
+    /* Toolbar (horizontal, scrollable on small screens) */
+    .toolbar {
+      display:flex; gap:8px; padding:6px 10px; border-top:1px solid #0f1726; border-bottom:1px solid #0f1726;
+      overflow-x:auto; scrollbar-width:thin;
+    }
+    .toolbtn {
+      background:#0e1520; border:1px solid #1f2937; color:#e9eef3; padding:6px 10px; border-radius:10px; font-weight:700; font-size:13px;
+      white-space:nowrap;
+    }
+    .toolbtn.active { background:#1a2333; border-color:#2a3b55; }
+
+    /* Dropdown panel: only one open at a time */
+    .panelwrap { background:#0e1520; border-top:1px solid #1f2937; display:none; }
+    .panel { display:none; padding:10px; }
+    .panel.open { display:block; }
+    .panelwrap.open { display:block; }
+
+    /* Controls */
+    .btn { background:#1f2937; color:#e9eef3; border:1px solid #2b3b50; padding:6px 10px; border-radius:10px; font-weight:700; font-size:13px; }
+    .pill { display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border:1px solid #2b3b50; border-radius:999px; font-size:12px; }
+    .muted { opacity:.9; font-size:12px; }
+    .row { display:flex; flex-wrap:wrap; gap:8px 10px; align-items:center; }
+    .row label { font-size:12px; opacity:.95; display:flex; align-items:center; gap:6px; }
+    input, select { background:#0b111b; color:#e9eef3; border:1px solid #233044; border-radius:8px; padding:6px 8px; font-size:13px; }
+    input[type="number"]{ width:84px; }
+    select { min-width: 170px; }
+    #greenCanvas { image-rendering:pixelated; border:1px solid #233044; border-radius:8px; width:140px; height:140px; background:#0b0f14; }
+
+    /* Compact bottom status bar */
+    #yardage { position:fixed; height:64px; bottom:0; left:0; right:0; z-index:1000; background:#0e1520f2; backdrop-filter: blur(6px); border-top:1px solid #1f2937; display:flex; align-items:center; justify-content:space-between; padding:8px 12px; }
+    #yardage .left { display:flex; align-items:baseline; gap:10px; }
+    #ydMain { font-size:26px; font-weight:800; letter-spacing:0.2px; }
+    #holeBadge { font-size:12px; opacity:.9; }
+    #methodBadge { font-size:12px; opacity:.75; }
+    #moreBtn { font-size:12px; }
+    #fcb { display:none; gap:8px; font-size:12px; opacity:.95; }
+    #fcb span { opacity:.9; }
+    #yardage .right { display:flex; gap:8px; align-items:center; }
+    #gpsAcc, #speed { font-size:12px; }
+    #locStatus { font-size:12px; opacity:.85; }
+
+    .legend { position:fixed; right:12px; top:calc(var(--headerH) + 12px); background:#0e1520cc; border:1px solid #1f2937; border-radius:10px; padding:6px 8px; z-index:900; font-size:12px; }
     .legend div { margin:4px 0; }
-    label { font-size:12px; opacity:.9; }
-    .slowlane { display:flex; gap:12px; align-items:flex-start; flex-wrap:wrap; }
-    .card { border:1px solid #1f2937; border-radius:12px; padding:8px; background:#0e1520cc; }
-    .card h4 { margin:4px 0 8px 0; font-size:12px; opacity:.9; }
-    #greenCanvas { background:#0b0f14; border:1px solid #233044; border-radius:8px; image-rendering: pixelated; }
-    textarea { width: 360px; height: 110px; background:#0e1520; color:#e9eef3; border:1px solid #233044; border-radius:8px; padding:6px 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size:12px; }
-    @media (max-width: 560px) {
-      header .btn { padding:6px 8px; font-size:12px; }
-      header input { width: 160px; }
-      header select { min-width: 150px; }
-      header input[type="number"]{ width:80px; }
-      textarea { width: 100%; }
+    .kv { display:inline-block; width:10px; height:10px; margin-right:6px; border-radius:2px; }
+    .k1{background:#7c3aed}.k2{background:#10b981}.k3{background:#f59e0b}.k4{background:#ef4444}.k5{background:#22c55e}.k6{background:#3b82f6}.k7{background:#f97316}
+
+    @media (max-width: 640px) {
+      :root { --headerH: 92px; }
+      #map { bottom:72px; }
+      #yardage { height:72px; }
+      #ydMain { font-size:24px; }
+      input[type="number"]{ width:76px; }
+      select { min-width: 150px; }
     }
   </style>
 </head>
 <body>
   <header id="hdr">
-    <div class="row">
+    <!-- Quick bar -->
+    <div class="toprow">
       <button id="locBtn" class="btn">Locate</button>
       <button id="followBtn" class="btn">Follow: ON</button>
-      <button id="debugBtn" class="btn">Overlay: OFF</button>
-
-      <select id="methodSelect" title="F/C/B method">
-        <option value="ray">Ray via centroid</option>
-        <option value="perimeter">Perimeter scan</option>
-      </select>
-
-      <select id="courseSelect" title="Fly to course">
-        <option value="">— Fly to course —</option>
-        <option value="36.5685,-121.9513,16">Pebble Beach (CA)</option>
-        <option value="30.1980,-81.3931,16">TPC Sawgrass (FL)</option>
-        <option value="33.5021,-82.0209,16">Augusta National (GA)</option>
-        <option value="-37.9155,145.0417,16">Royal Melbourne West (AUS)</option>
-      </select>
-      <button id="flyBtn" class="btn">Fly</button>
-
-      <button id="bleBtn" class="btn">Connect BLE</button>
-      <button id="pingBtn" class="btn">Send Test</button>
-      <button id="debugToggle" class="btn">Screen Debug: OFF</button>
-      <small id="bleState">BLE: OFF</small>
-      <small id="status" style="margin-left:auto;">Ready</small>
+      <button id="bleConnBtn" class="btn">Connect BLE</button>
+      <span id="bleStatus" class="pill">BLE: Not connected</span>
+      <span id="status" class="muted" style="margin-left:auto;">Ready</span>
     </div>
 
-    <div class="row">
-      <label>Svc:<input id="svcUuid" value="0000f00d-0000-1000-8000-00805f9b34fb"></label>
-      <label>Yard:<input id="chrUuid" value="0000f00e-0000-1000-8000-00805f9b34fb"></label>
-      <label>Ctrl:<input id="ctrlUuid" value="0000f00f-0000-1000-8000-00805f9b34fb"></label>
-      <label><input type="checkbox" id="asciiMode"> ASCII</label>
-      <small>(F/C/B uses centroid + chosen method. Auto-load enabled.)</small>
+    <!-- Horizontal toolbar -->
+    <div class="toolbar" id="toolbar">
+      <button class="toolbtn" data-panel="p-ble">BLE</button>
+      <button class="toolbtn" data-panel="p-course">Course</button>
+      <button class="toolbtn" data-panel="p-compute">Compute</button>
+      <button class="toolbtn" data-panel="p-image">Green Image</button>
+      <button class="toolbtn" data-panel="p-adv">Advanced</button>
     </div>
 
-    <div class="row">
-      <div id="bleStatus" class="pill">BLE status: Not connected</div>
-      <div class="pill" id="viewLockPill" style="display:none;">View locked</div>
-      <div class="pill" title="X=stale timeout Y=min redraw Z=threshold">
-        X <input type="number" id="cfgX" value="15000" style="width:80px">
-        Y <input type="number" id="cfgY" value="1200" style="width:80px">
-        Z <input type="number" id="cfgZ" value="2" style="width:60px">
-        <button id="sendCfgBtn" class="btn" style="padding:4px 8px">Send CFG</button>
+    <!-- Dropdown panels (single-open) -->
+    <div class="panelwrap" id="panelwrap">
+      <div class="panel" id="p-ble">
+        <div class="row">
+          <label>Rate (ms) <input type="number" id="bleRate" value="1000" min="100"></label>
+          <button id="debugToggle" class="btn">Screen Debug: OFF</button>
+          <div class="pill" title="X=stale timeout Y=min redraw Z=threshold">
+            X <input type="number" id="cfgX" value="15000" style="width:72px">
+            Y <input type="number" id="cfgY" value="1200" style="width:72px">
+            Z <input type="number" id="cfgZ" value="2" style="width:56px">
+            <button id="sendCfgBtn" class="btn" style="padding:4px 8px">Send CFG</button>
+          </div>
+          <button id="pingBtn" class="btn">Send Test</button>
+        </div>
       </div>
-      <label title="Minimum time between BLE writes (ms)">BLE rate (ms): <input type="number" id="bleRate" value="1000" min="100" style="width:80px"></label>
-    </div>
 
-    <!-- SLOW LANE: Green image generator (preview + send) -->
-    <div class="row slowlane">
-      <div class="card">
-        <h4>Green Image (Preview & Send)</h4>
-        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-          <label>W <input type="number" id="imgW" value="160" min="16" style="width:70px"></label>
-          <label>H <input type="number" id="imgH" value="120" min="16" style="width:70px"></label>
-          <label>X <input type="number" id="imgX" value="10" style="width:70px"></label>
-          <label>Y <input type="number" id="imgY" value="10" style="width:70px"></label>
+      <div class="panel" id="p-course">
+        <div class="row">
+          <select id="courseSelect" title="Fly to course">
+            <option value="">— Fly to course —</option>
+            <option value="36.5685,-121.9513,16">Pebble Beach (CA)</option>
+            <option value="30.1980,-81.3931,16">TPC Sawgrass (FL)</option>
+            <option value="33.5021,-82.0209,16">Augusta National (GA)</option>
+            <option value="-37.9155,145.0417,16">Royal Melbourne West (AUS)</option>
+          </select>
+          <button id="flyBtn" class="btn">Fly</button>
+        </div>
+      </div>
+
+      <div class="panel" id="p-compute">
+        <div class="row">
+          <label>Method
+            <select id="methodSelect" title="F/C/B method">
+              <option value="ray">Ray via centroid</option>
+              <option value="perimeter">Perimeter scan</option>
+            </select>
+          </label>
+          <label><input type="checkbox" id="asciiMode" checked> ASCII fast-lane</label>
+          <button id="debugBtn" class="btn">Overlay: OFF</button>
+        </div>
+      </div>
+
+      <div class="panel" id="p-image">
+        <div class="row">
+          <label>W <input type="number" id="imgW" value="70" min="16"></label>
+          <label>H <input type="number" id="imgH" value="70" min="16"></label>
+          <label>X <input type="number" id="imgX" value="0"></label>
+          <label>Y <input type="number" id="imgY" value="0"></label>
           <label><input type="checkbox" id="imgInvert"> Invert</label>
           <label><input type="checkbox" id="imgFull"> Full refresh</label>
           <label title="Bytes per BLE chunk (binary payload)">
-            Chunk <input type="number" id="chunkSz" value="160" min="20" style="width:70px">
+            Chunk <input type="number" id="chunkSz" value="60" min="20">
           </label>
-          <label><input type="checkbox" id="autoOnHole" checked> Auto-preview on hole change</label>
-          <button id="genImgBtn" class="btn">Preview Green Image</button>
-          <button id="sendImgBtn" class="btn">Send over BLE</button>
+          <label><input type="checkbox" id="autoOnHole" checked> Auto-send on hole change</label>
+          <button id="genImgBtn" class="btn">Preview & Send</button>
+          <canvas id="greenCanvas" width="70" height="70"></canvas>
         </div>
-        <div style="display:flex; gap:12px; margin-top:8px; flex-wrap:wrap;">
-          <canvas id="greenCanvas" width="160" height="120"></canvas>
-          <div>
-            <div id="imgSummary" style="font-size:12px; line-height:1.4;"></div>
-            <textarea id="imgHex" spellcheck="false" readonly></textarea>
-          </div>
+      </div>
+
+      <div class="panel" id="p-adv">
+        <div class="row">
+          <div class="muted">Svc: 0000f00d‑0000‑1000‑8000‑00805f9b34fb</div>
+          <div class="muted">Yard: 0000f00e‑0000‑1000‑8000‑00805f9b34fb</div>
+          <div class="muted">Ctrl: 0000f00f‑0000‑1000‑8000‑00805f9b34fb</div>
+          <div class="muted">Img:  0000f010‑0000‑1000‑8000‑00805f9b34fb</div>
         </div>
       </div>
     </div>
@@ -117,70 +166,97 @@
 
   <div id="map"></div>
 
+  <!-- Compact bottom status bar -->
   <div id="yardage">
-    <div>
-      <div class="small">Hole <span id="holeRef">—</span> · <span id="methodLabel">ray</span></div>
-      <div class="big"><span id="ydCenter">—</span> yd</div>
-      <div class="small" id="trioRow" style="margin-top:4px; display:none">Front <span id="ydF">—</span> · Center <span id="ydC">—</span> · Back <span id="ydB">—</span></div>
-      <div class="small" id="locStatus">Waiting for location…</div>
+    <div class="left">
+      <span id="holeBadge">Hole <span id="holeRef">—</span></span>
+      <span id="methodBadge">Method: <span id="methodLabel">ray</span></span>
+      <span id="ydMain"><span id="ydCenter">—</span> yd</span>
+      <button id="moreBtn" class="btn" style="padding:4px 8px;">More</button>
+      <div id="fcb">
+        <span>F <span id="ydF">—</span></span>·
+        <span>C <span id="ydC">—</span></span>·
+        <span>B <span id="ydB">—</span></span>
+      </div>
     </div>
-    <div>
-      <span class="pill" id="gpsAcc">— m</span>
-      <span class="pill" id="speed">0.0 m/s</span>
+    <div class="right">
+      <span id="gpsAcc" class="pill">— m</span>
+      <span id="speed" class="pill">0.0 m/s</span>
+      <span id="locStatus">Waiting for location…</span>
     </div>
   </div>
 
   <div class="legend">
-    <div><span style="display:inline-block;width:10px;height:10px;background:#7c3aed;border-radius:2px;margin-right:6px"></span> Hole centerline</div>
-    <div><span style="display:inline-block;width:10px;height:10px;background:#10b981;border-radius:2px;margin-right:6px"></span> Green</div>
-    <div><span style="display:inline-block;width:10px;height:10px;background:#f59e0b;border-radius:2px;margin-right:6px"></span> Tee</div>
-    <div><span style="display:inline-block;width:10px;height:10px;background:#ef4444;border-radius:2px;margin-right:6px"></span> You</div>
-    <div><span style="display:inline-block;width:10px;height:10px;background:#22c55e;border-radius:2px;margin-right:6px"></span> Front</div>
-    <div><span style="display:inline-block;width:10px;height:10px;background:#3b82f6;border-radius:2px;margin-right:6px"></span> Center</div>
-    <div><span style="display:inline-block;width:10px;height:10px;background:#f97316;border-radius:2px;margin-right:6px"></span> Back</div>
+    <div><span class="kv k1"></span> Hole centerline</div>
+    <div><span class="kv k2"></span> Green</div>
+    <div><span class="kv k3"></span> Tee</div>
+    <div><span class="kv k4"></span> You</div>
+    <div><span class="kv k5"></span> Front</div>
+    <div><span class="kv k6"></span> Center</div>
+    <div><span class="kv k7"></span> Back</div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
   <script>
-    // --- layout so map sits under header ---
+    // --- layout + toolbar accordion (single-open) ---
     const hdr = document.getElementById('hdr');
+    const panelwrap = document.getElementById('panelwrap');
+    const panels = [...document.querySelectorAll('.panel')];
+    const toolbar = document.getElementById('toolbar');
+    function openPanel(id){
+      const already = panels.find(p => p.classList.contains('open'));
+      panels.forEach(p => p.classList.remove('open'));
+      [...toolbar.querySelectorAll('.toolbtn')].forEach(b => b.classList.remove('active'));
+      if (!id || (already && already.id === id)) { // close all
+        panelwrap.classList.remove('open');
+      } else {
+        document.getElementById(id).classList.add('open');
+        panelwrap.classList.add('open');
+        toolbar.querySelector(`[data-panel="${id}"]`).classList.add('active');
+      }
+      layout();
+    }
+    toolbar.addEventListener('click', (e)=>{
+      const btn = e.target.closest('.toolbtn'); if(!btn) return;
+      openPanel(btn.dataset.panel);
+    });
+
     const layout = () => document.documentElement.style.setProperty('--headerH', hdr.offsetHeight + 'px');
     new ResizeObserver(layout).observe(hdr); window.addEventListener('load', layout);
+
+    // Toggle F/C/B in compact bar
+    const moreBtn = document.getElementById('moreBtn');
+    const fcb = document.getElementById('fcb');
+    let fcbOpen = false;
+    moreBtn.onclick = () => { fcbOpen = !fcbOpen; fcb.style.display = fcbOpen ? 'inline-flex' : 'none'; moreBtn.textContent = fcbOpen ? 'Less' : 'More'; };
 
     // ===== MAP =====
     const map = L.map('map', { zoomSnap: 0.25, zoomControl: false });
     L.control.zoom({ position: 'bottomright' }).addTo(map);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap' }).addTo(map);
-
-    const youIcon = L.circleMarker([0,0], { radius: 7, color: '#ef4444', weight: 2, fillColor:'#ef4444', fillOpacity:0.7 });
-    const projIcon = L.circleMarker([0,0], { radius: 5, color: '#ffffff', weight: 1, fillColor:'#ffffff', fillOpacity:0.7 });
-
+    const youIcon = L.circleMarker([0,0], { radius: 6, color: '#ef4444', weight: 2, fillColor:'#ef4444', fillOpacity:0.7 });
+    const projIcon = L.circleMarker([0,0], { radius: 4, color: '#ffffff', weight: 1, fillColor:'#ffffff', fillOpacity:0.7 });
     const holesLayer = L.geoJSON(null, { style: { color:'#7c3aed', weight:3 } }).addTo(map);
     const greensLayer = L.geoJSON(null, { style: { color:'#10b981', weight:2, fillOpacity:0.1, fillColor:'#10b981' } }).addTo(map);
     const teesLayer = L.geoJSON(null, { style: { color:'#f59e0b', weight:2, fillOpacity:0.1, fillColor:'#f59e0b' } }).addTo(map);
     const debugGroup = L.layerGroup().addTo(map);
 
+    // Debug overlay toggle (in Compute panel)
     let debugOverlayOn = false;
-    const debugBtn = document.getElementById('debugBtn');
-    debugBtn.onclick = () => {
+    document.getElementById('debugBtn').onclick = () => {
       debugOverlayOn = !debugOverlayOn;
-      debugBtn.textContent = 'Overlay: ' + (debugOverlayOn ? 'ON' : 'OFF');
+      document.getElementById('debugBtn').textContent = 'Overlay: ' + (debugOverlayOn ? 'ON' : 'OFF');
       if (!debugOverlayOn) debugGroup.clearLayers();
     };
 
     // ===== View lock / Follow =====
-    let follow = true;
-    let lockViewport = false; // when true, never auto-move the map
-    const viewLockPill = document.getElementById('viewLockPill');
-
+    let follow = true, lockViewport = false;
     document.getElementById('followBtn').onclick = () => {
       follow = !follow;
       document.getElementById('followBtn').textContent = `Follow: ${follow ? 'ON' : 'OFF'}`;
       lockViewport = !follow;
-      viewLockPill.style.display = lockViewport ? 'inline-block' : 'none';
     };
-
     document.getElementById('locBtn').onclick = () => {
       if (lastPos) map.setView([lastPos.coords.latitude, lastPos.coords.longitude], 16, { animate:true });
     };
@@ -188,12 +264,7 @@
     function setStatus(msg) { document.getElementById('status').textContent = msg; }
     function setLocStatus(msg) { document.getElementById('locStatus').textContent = msg; }
     const bleStatus = document.getElementById('bleStatus');
-    function setBleStatus(text, ok=null) {
-      bleStatus.textContent = text;
-      if (ok === true) { bleStatus.style.background = '#0f5132'; bleStatus.style.color = '#d1fae5'; }
-      else if (ok === false) { bleStatus.style.background = '#5c2c2c'; bleStatus.style.color = '#fee2e2'; }
-      else { bleStatus.style.background = ''; bleStatus.style.color = ''; }
-    }
+    function setBleStatus(text, ok=null) { bleStatus.textContent = (typeof ok === 'boolean' ? (ok ? '✅ ' : '❌ ') : '') + text; }
 
     // ===== GPS =====
     let lastPos = null;
@@ -202,21 +273,13 @@
       navigator.geolocation.watchPosition(onPos, onPosErr, { enableHighAccuracy:true, maximumAge:1000, timeout:10000 });
     }
     function onPos(pos) {
-      // Ignore very poor updates when view is locked (typical on laptops without GPS)
-      if (!follow && pos.coords.accuracy && pos.coords.accuracy > 1000) {
-        document.getElementById('gpsAcc').textContent = pos.coords.accuracy.toFixed(0) + ' m';
-        return;
-      }
+      if (!follow && pos.coords.accuracy && pos.coords.accuracy > 1000) { document.getElementById('gpsAcc').textContent = pos.coords.accuracy.toFixed(0) + ' m'; return; }
       lastPos = pos;
       const {latitude:lat, longitude:lon, accuracy:acc, speed} = pos.coords;
       document.getElementById('gpsAcc').textContent = (acc||0).toFixed(0) + ' m';
       document.getElementById('speed').textContent = ((speed||0)).toFixed(1) + ' m/s';
       youIcon.setLatLng([lat,lon]).addTo(map);
-
-      if (follow && !lockViewport) {
-        map.setView([lat,lon], Math.max(map.getZoom(), 16), { animate:true });
-      }
-
+      if (follow && !lockViewport) map.setView([lat,lon], Math.max(map.getZoom(), 16), { animate:true });
       updateYardage();
       maybeFetchCourse(lat, lon);
     }
@@ -270,79 +333,44 @@ out body;`
       if (!holes.length && !greens.length) { setStatus('No golf features nearby'); return; }
       course = { holes, greens, tees };
       const all = L.featureGroup([holesLayer, greensLayer, teesLayer]);
-      try {
-        if (!lockViewport) map.fitBounds(all.getBounds(), { padding:[20,20] });
-      } catch {}
+      try { if (!lockViewport) map.fitBounds(all.getBounds(), { padding:[20,20] }); } catch {}
       setStatus('Course loaded.');
       updateYardage();
     }
 
-    // ===== Auto-loader (movement/time/cooldown) =====
-    const REQUERY_MOVE_M = 400;
-    const REQUERY_MAX_AGE_MS = 12*60*1000;
-    const FETCH_COOLDOWN_MS = 45*1000;
-    let lastFetchCenter = null;  // [lat, lon]
-    let lastFetchAt = 0;
-    let fetching = false;
-
+    // ===== Auto-loader =====
+    const REQUERY_MOVE_M = 400, REQUERY_MAX_AGE_MS = 12*60*1000, FETCH_COOLDOWN_MS = 45*1000;
+    let lastFetchCenter = null, lastFetchAt = 0, fetching = false;
     function needFetch(lat, lon) {
       if (!lastFetchCenter) return true;
-      const movedM = turf.distance(
-        turf.point([lastFetchCenter[1], lastFetchCenter[0]]),
-        turf.point([lon, lat]),
-        { units: 'meters' }
-      );
+      const movedM = turf.distance(turf.point([lastFetchCenter[1], lastFetchCenter[0]]), turf.point([lon, lat]), { units: 'meters' });
       const age = Date.now() - lastFetchAt;
-      if (age > REQUERY_MAX_AGE_MS) return true;
-      if (movedM > REQUERY_MOVE_M) return true;
-      return false;
+      return (age > REQUERY_MAX_AGE_MS) || (movedM > REQUERY_MOVE_M);
     }
-
     async function maybeFetchCourse(lat, lon) {
       if (fetching) return;
       const since = Date.now() - lastFetchAt;
       if (since < FETCH_COOLDOWN_MS) return;
       if (!needFetch(lat, lon)) return;
       fetching = true;
-      try {
-        await loadCourseAround(lat, lon);
-        lastFetchCenter = [lat, lon];
-        lastFetchAt = Date.now();
-      } catch (e) {
-        lastFetchAt = Date.now() - (FETCH_COOLDOWN_MS / 2);
-        setStatus('Fetch failed; will retry later.');
-      } finally {
-        fetching = false;
-      }
+      try { await loadCourseAround(lat, lon); lastFetchCenter = [lat, lon]; lastFetchAt = Date.now(); }
+      catch (e) { lastFetchAt = Date.now() - (FETCH_COOLDOWN_MS/2); setStatus('Fetch failed; will retry later.'); }
+      finally { fetching = false; }
     }
 
-    // ===== Hole/green + F/C/B methods =====
-    function nearestHoleFeature(lat, lon) {
-      if (!course || !course.holes.length) return null;
-      const p = turf.point([lon, lat]);
-      let best = null;
-      for (const f of course.holes) {
-        const d = turf.pointToLineDistance(p, f, { units:'meters' });
-        if (!best || d < best.d) best = { f, d };
-      }
+    // ===== Yardage math =====
+    function nearestHoleFeature(lat, lon) { if (!course || !course.holes.length) return null;
+      const p = turf.point([lon, lat]); let best = null;
+      for (const f of course.holes) { const d = turf.pointToLineDistance(p, f, { units:'meters' }); if (!best || d < best.d) best = { f, d }; }
       return best ? best.f : null;
     }
-    function pickGreenForHole(hole) {
-      if (!course || !course.greens?.length) return null;
-      const end = hole.geometry.coordinates.at(-1);
-      const endPt = turf.point(end);
-      let best=null;
-      for (const g of course.greens) {
-        const c = turf.centroid(g);
-        const d = turf.distance(c, endPt, { units:'meters' });
-        if (!best || d < best.d) best = { g, d };
-      }
+    function pickGreenForHole(hole) { if (!course || !course.greens?.length) return null;
+      const end = hole.geometry.coordinates.at(-1), endPt = turf.point(end); let best=null;
+      for (const g of course.greens) { const c = turf.centroid(g); const d = turf.distance(c, endPt, { units:'meters' }); if (!best || d < best.d) best = { g, d }; }
       return best ? best.g : null;
     }
-
     function calcFCB_ray(green, mePoint) {
-      try {
-        const centroid = turf.centroid(green);
+      try { const centroid = turf.centroid(green);
         const Cyd = turf.distance(mePoint, centroid, {units:'meters'}) * 1.0936133;
         const brg = turf.bearing(mePoint, centroid);
         const far = turf.destination(mePoint, 2, brg, { units:'kilometers' });
@@ -360,10 +388,8 @@ out body;`
         return { Fyd, Cyd, Byd, Fpt, Cpt: centroid.geometry.coordinates, Bpt, _ray: ray.geometry.coordinates };
       } catch { return null; }
     }
-
     function calcFCB_perimeter(green, mePoint) {
-      try {
-        const centroid = turf.centroid(green);
+      try { const centroid = turf.centroid(green);
         const Cyd = turf.distance(mePoint, centroid, {units:'meters'}) * 1.0936133;
         const boundary = turf.flatten(turf.polygonToLine(green));
         let Fpt = null, Bpt = null, minM = Infinity, maxM = -Infinity;
@@ -376,79 +402,77 @@ out body;`
             if (dv > maxM) { maxM = dv; Bpt = c; }
           }
         }
-        const Fyd = minM * 1.0936133;
-        const Byd = maxM * 1.0936133;
+        const Fyd = minM * 1.0936133, Byd = maxM * 1.0936133;
         return { Fyd, Cyd, Byd, Fpt, Cpt: centroid.geometry.coordinates, Bpt };
       } catch { return null; }
     }
 
-    // ===== BLE (yardage + control) =====
-    let bleDevice=null, bleChar=null, controlChar=null, lastBleSend=0, lastSent={y:-1,h:-1};
+    // ===== BLE (fixed UUIDs) =====
+    const SERVICE_UUID      = "0000f00d-0000-1000-8000-00805f9b34fb";
+    const CHAR_UUID_YARDAGE = "0000f00e-0000-1000-8000-00805f9b34fb";
+    const CHAR_UUID_CONTROL = "0000f00f-0000-1000-8000-00805f9b34fb";
+    const CHAR_UUID_IMAGE   = "0000f010-0000-1000-8000-00805f9b34fb";
 
-    function getUUIDs(){ return { service: svcUuid.value.trim(), char: chrUuid.value.trim(), ctrl: ctrlUuid.value.trim(), ascii: asciiMode.checked }; }
-    function isBleConnected() {
-      return !!(bleDevice && bleDevice.gatt && bleDevice.gatt.connected);
-    }
+    let bleDevice=null, yardageChar=null, controlChar=null, imageChar=null;
+    let bleChar=null, lastBleSend=0, lastSent={y:-1,h:-1};
+    let lastHoleRefSent = null; // NEW: track last hole sent
+
+    function isBleConnected() { return !!(bleDevice?.gatt?.connected); }
     function setBleUiConnected(connected) {
-      const btn = document.getElementById('bleBtn');
+      const btn = document.getElementById('bleConnBtn');
       btn.textContent = connected ? 'Disconnect BLE' : 'Connect BLE';
-      bleState.textContent = connected ? 'BLE: ON' : 'BLE: OFF';
       setBleStatus(connected ? 'BLE: Connected' : 'BLE: Not connected', connected ? true : null);
     }
     function getBleMinIntervalMs() {
       const v = parseInt(document.getElementById('bleRate').value, 10);
-      return Number.isFinite(v) ? Math.max(100, v) : 1000; // clamp to >=100ms
+      return Number.isFinite(v) ? Math.max(100, v) : 1000;
     }
 
     async function connectBLE() {
       if (!navigator.bluetooth) { setStatus('Web Bluetooth not supported'); return; }
-      const { service, char, ctrl } = getUUIDs();
       try {
         setStatus('Requesting BLE device…');
-        bleDevice = await navigator.bluetooth.requestDevice({ filters:[{ services:[service] }], optionalServices:[service] });
+        bleDevice = await navigator.bluetooth.requestDevice({ filters:[{ services:[SERVICE_UUID] }], optionalServices:[SERVICE_UUID] });
         bleDevice.addEventListener('gattserverdisconnected', ()=>{
           setStatus('BLE disconnected');
           setBleUiConnected(false);
-          bleChar=null; controlChar=null;
+          yardageChar=controlChar=imageChar=bleChar=null;
         });
         const server = await bleDevice.gatt.connect();
-        const svc = await server.getPrimaryService(service);
-        bleChar = await svc.getCharacteristic(char);
-        try { controlChar = await svc.getCharacteristic(ctrl); } catch { controlChar = null; }
-        setStatus('BLE connected.');
-        setBleUiConnected(true);
+        const svc = await server.getPrimaryService(SERVICE_UUID);
+        const chars = await svc.getCharacteristics();
+        yardageChar = controlChar = imageChar = null;
+        for (const ch of chars) {
+          const u = ch.uuid.toLowerCase();
+          if (u === CHAR_UUID_YARDAGE) yardageChar = ch;
+          else if (u === CHAR_UUID_CONTROL) controlChar = ch;
+          else if (u === CHAR_UUID_IMAGE)   imageChar = ch;
+        }
+        bleChar = yardageChar;
+        setStatus('BLE connected.'); setBleUiConnected(true);
 
-        // notifications for yardage (optional)
         try {
-          await bleChar.startNotifications();
-          bleChar.addEventListener('characteristicvaluechanged', (e) => {
-            const s = new TextDecoder().decode(e.target.value).trim();
-            console.log('notify:', s);
-            setBleStatus('Notify: ' + s, true);
-          });
+          if (yardageChar?.startNotifications) {
+            await yardageChar.startNotifications();
+            yardageChar.addEventListener('characteristicvaluechanged', (e) => {
+              const s = new TextDecoder().decode(e.target.value).trim();
+              setBleStatus('Notify: ' + s, true);
+            });
+          }
         } catch {}
       } catch(e){ setStatus('BLE error: '+e.message); setBleStatus('BLE error: ' + e.message, false); }
     }
 
-    // Toggle Connect/Disconnect
-    document.getElementById('bleBtn').onclick = async () => {
+    document.getElementById('bleConnBtn').onclick = async () => {
       try {
-        if (isBleConnected()) {
-          bleDevice.gatt.disconnect();
-          setBleUiConnected(false);
-          bleChar = null;
-          controlChar = null;
-          return;
-        }
+        if (isBleConnected()) { bleDevice.gatt.disconnect(); setBleUiConnected(false); yardageChar=controlChar=imageChar=bleChar=null; return; }
         await connectBLE();
-      } catch(e) {
-        setStatus('BLE error: ' + e.message);
-        setBleStatus('BLE error: ' + e.message, false);
-      }
+      } catch(e) { setStatus('BLE error: ' + e.message); setBleStatus('BLE error: ' + e.message, false); }
     };
 
+    // Control
     document.getElementById('debugToggle').onclick = async () => {
-      if (!controlChar) { setStatus('No control characteristic'); return; }
+      if (!controlChar) { setStatus('No CONTROL characteristic'); return; }
       const btn = document.getElementById('debugToggle');
       const turnOn = btn.textContent.includes('OFF');
       const cmd = turnOn ? 'DEBUG=1' : 'DEBUG=0';
@@ -456,9 +480,8 @@ out body;`
       btn.textContent = 'Screen Debug: ' + (turnOn ? 'ON' : 'OFF');
       setStatus('Sent control: ' + cmd);
     };
-
     document.getElementById('sendCfgBtn').onclick = async () => {
-      if (!controlChar) { setStatus('No control characteristic'); return; }
+      if (!controlChar) { setStatus('No CONTROL characteristic'); return; }
       const X = parseInt(document.getElementById('cfgX').value, 10) || 15000;
       const Y = parseInt(document.getElementById('cfgY').value, 10) || 1200;
       const Z = parseInt(document.getElementById('cfgZ').value, 10) || 2;
@@ -467,30 +490,27 @@ out body;`
       setStatus('Sent control: ' + cmd);
     };
 
-    async function sendBLE(holeNum, yards, f=null, b=null) {
+    // ===== Fast lane (yardage) with optional force =====
+    function asciiModeOn() { return document.getElementById('asciiMode').checked; }
+    async function sendBLE(holeNum, yards, f=null, b=null, opts={}) {
       if (!bleChar) return;
+      const force = !!opts.force;
       const now = Date.now();
-      const minInterval = getBleMinIntervalMs();
-      if (now - lastBleSend < minInterval) return;
-
-      const { ascii } = getUUIDs();
+      if (!force) {
+        const min = getBleMinIntervalMs();
+        if (now - lastBleSend < min) return;
+      }
       const rawY = Math.max(0, Math.min(65535, Math.round(yards)));
       const rawH = Math.max(0, Math.min(255, holeNum||0));
       try{
-        if (ascii) {
+        if (asciiModeOn()) {
           let msg = `H${rawH} ${rawY}`;
           if (Number.isFinite(f) && Number.isFinite(b)) msg += ` F${Math.round(f)} B${Math.round(b)}`;
           await bleChar.writeValue(new TextEncoder().encode(msg));
-          await new Promise(r=>setTimeout(r, 200));
-          const val = await bleChar.readValue().catch(()=>null);
-          const echoed = val ? new TextDecoder().decode(val).trim() : '';
-          const expected = Number.isFinite(f) && Number.isFinite(b) ? `H${rawH} ${rawY} F${Math.round(f)} B${Math.round(b)}` : `H${rawH} ${rawY}`;
-          const ok = echoed === expected;
-          setBleStatus(ok ? '✅ Device updated' : `❌ Mismatch (${echoed||'no read'})`, ok);
         } else {
           if (Number.isFinite(f) && Number.isFinite(b)) {
             const buf=new ArrayBuffer(8), dv=new DataView(buf);
-            dv.setUint16(0, rawY, true); dv.setUint8(2, rawH); dv.setUint8(3, 1); // flags bit0=hasFB
+            dv.setUint16(0, rawY, true); dv.setUint8(2, rawH); dv.setUint8(3, 1);
             dv.setUint16(4, Math.max(0,Math.min(65535,Math.round(f))), true);
             dv.setUint16(6, Math.max(0,Math.min(65535,Math.round(b))), true);
             if (bleChar.writeValueWithoutResponse) await bleChar.writeValueWithoutResponse(buf); else await bleChar.writeValue(buf);
@@ -499,322 +519,153 @@ out body;`
             dv.setUint16(0, rawY, true); dv.setUint8(2, rawH); dv.setUint8(3, 0);
             if (bleChar.writeValueWithoutResponse) await bleChar.writeValueWithoutResponse(buf); else await bleChar.writeValue(buf);
           }
-          await new Promise(r=>setTimeout(r, 200));
-          const val = await bleChar.readValue().catch(()=>null);
-          const echoed = val ? new TextDecoder().decode(val).trim() : '';
-          const expected = Number.isFinite(f) && Number.isFinite(b) ? `H${rawH} ${rawY} F${Math.round(f)} B${Math.round(b)}` : `H${rawH} ${rawY}`;
-          const ok = echoed === expected;
-          setBleStatus(ok ? '✅ Device updated' : `❌ Mismatch (${echoed||'no read'})`, ok);
         }
-        lastBleSend = now; lastSent = { y: Math.round(yards), h: holeNum||0 };
-      }catch(e){ setStatus('BLE write failed: '+e.message); setBleStatus('BLE write failed: ' + e.message, false); }
+        lastBleSend = now;
+        lastSent = { y: Math.round(yards), h: holeNum||0 };
+      } catch(e){
+        setStatus('BLE write failed: '+e.message);
+        setBleStatus('BLE write failed: ' + e.message, false);
+      }
     }
     document.getElementById('pingBtn').onclick = ()=> sendBLE(99,321, 311, 345);
 
-    // ===== SLOW LANE (Preview + Send): Rasterize green → 1-bpp bytes =====
+    // ===== Slow lane: rasterize + send over IMAGE char (ASCII meta + binary) =====
     function pack1bppMSB(imageData, width, height) {
-      const bytesPerRow = (width + 7) >> 3;
-      const out = new Uint8Array(bytesPerRow * height);
-      const data = imageData.data; // RGBA
-      let di = 0;
-      for (let y = 0; y < height; y++) {
-        for (let xByte = 0; xByte < bytesPerRow; xByte++) {
-          let b = 0;
-          for (let bit = 0; bit < 8; bit++) {
-            const x = (xByte << 3) + bit;
-            if (x < width) {
-              const idx = (y * width + x) << 2;
-              const lum = data[idx]*0.2126 + data[idx+1]*0.7152 + data[idx+2]*0.0722;
-              const on = lum < 128; // black pixel = 1
-              b |= (on ? (1 << (7 - bit)) : 0); // MSB = leftmost pixel
-            }
-          }
-          out[di++] = b;
-        }
-      }
+      const bytesPerRow = (width + 7) >> 3; const out = new Uint8Array(bytesPerRow * height); const data = imageData.data; let di = 0;
+      for (let y = 0; y < height; y++) { for (let xByte = 0; xByte < bytesPerRow; xByte++) { let b = 0;
+        for (let bit = 0; bit < 8; bit++) { const x = (xByte << 3) + bit;
+          if (x < width) { const idx = (y * width + x) << 2; const lum = data[idx]*0.2126 + data[idx+1]*0.7152 + data[idx+2]*0.0722; const on = lum < 128; b |= (on ? (1 << (7 - bit)) : 0); }
+        } out[di++] = b; } }
       return out;
     }
-
     function polygonToCanvas(green, canvas, targetW, targetH, invert=false) {
-      const ctx = canvas.getContext('2d');
-      canvas.width = targetW; canvas.height = targetH;
-
-      // Background white; draw black for shape (or inverted)
-      ctx.fillStyle = invert ? '#000' : '#fff';
-      ctx.fillRect(0,0,targetW,targetH);
-      ctx.strokeStyle = invert ? '#fff' : '#000';
-      ctx.fillStyle = invert ? '#fff' : '#000';
-      ctx.lineWidth = Math.max(1, Math.floor(Math.min(targetW, targetH) / 80));
-
-      if (!green) {
-        ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(targetW,targetH); ctx.moveTo(targetW,0); ctx.lineTo(0,targetH); ctx.stroke();
-        return;
-      }
-
-      const ring = green.geometry.coordinates[0] || green.geometry.coordinates;
-      if (!ring || !ring.length) return;
-
-      // bounds
+      const ctx = canvas.getContext('2d'); canvas.width = targetW; canvas.height = targetH;
+      ctx.fillStyle = invert ? '#000' : '#fff'; ctx.fillRect(0,0,targetW,targetH);
+      ctx.strokeStyle = invert ? '#fff' : '#000'; ctx.fillStyle = invert ? '#fff' : '#000';
+      ctx.lineWidth = Math.max(1, Math.floor(Math.min(targetW, targetH) / 14));
+      if (!green) { ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(targetW,targetH); ctx.moveTo(targetW,0); ctx.lineTo(0,targetH); ctx.stroke(); return; }
+      const ring = green.geometry.coordinates[0] || green.geometry.coordinates; if (!ring?.length) return;
       let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
       for (const [lon,lat] of ring) { if (lon<minX)minX=lon; if (lat<minY)minY=lat; if (lon>maxX)maxX=lon; if (lat>maxY)maxY=lat; }
-      const w = maxX - minX, h = maxY - minY;
-      const scale = 0.94 * Math.min(targetW / (w || 1), targetH / (h || 1)); // padding
-      const centerX = (minX + maxX)/2, centerY = (minY + maxY)/2;
-      const offX = targetW/2, offY = targetH/2;
-
-      const toPx = ([lon,lat]) => {
-        const x = (lon - centerX) * scale + offX;
-        const y = (centerY - lat) * scale + offY; // invert Y
-        return [x,y];
-      };
-
-      ctx.beginPath();
-      ring.forEach((pt, i) => {
-        const [x,y] = toPx(pt);
-        if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
-      });
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
+      const w = maxX - minX, h = maxY - minY; const scale = 0.90 * Math.min(targetW / (w || 1), targetH / (h || 1));
+      const centerX = (minX + maxX)/2, centerY = (minY + maxY)/2; const offX = targetW/2, offY = targetH/2;
+      const toPx = ([lon,lat]) => [(lon - centerX) * scale + offX, (centerY - lat) * scale + offY];
+      ctx.beginPath(); ring.forEach((pt, i) => { const [x,y] = toPx(pt); if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); });
+      ctx.closePath(); ctx.fill(); ctx.stroke();
     }
-
     function buildGHIMBuffer(w, h, x, y, flags, bytes) {
-      // Binary header: "GHIM" + w + h + x + y + flags (LE)
-      const headerLen = 4 + 2 + 2 + 2 + 2 + 1;
-      const buf = new ArrayBuffer(headerLen + bytes.length);
-      const dv = new DataView(buf);
-      let o = 0;
-      dv.setUint8(o++, 'G'.charCodeAt(0));
-      dv.setUint8(o++, 'H'.charCodeAt(0));
-      dv.setUint8(o++, 'I'.charCodeAt(0));
-      dv.setUint8(o++, 'M'.charCodeAt(0));
-      dv.setUint16(o, w, true); o+=2;
-      dv.setUint16(o, h, true); o+=2;
-      dv.setInt16(o, x, true);  o+=2;
-      dv.setInt16(o, y, true);  o+=2;
-      dv.setUint8(o++, flags & 0xFF);
-      new Uint8Array(buf, headerLen).set(bytes);
-      return new Uint8Array(buf);
+      const headerLen = 4 + 2 + 2 + 2 + 2 + 1; const buf = new ArrayBuffer(headerLen + bytes.length); const dv = new DataView(buf); let o = 0;
+      dv.setUint8(o++, 71); dv.setUint8(o++, 72); dv.setUint8(o++, 73); dv.setUint8(o++, 77); // "GHIM"
+      dv.setUint16(o, w, true); o+=2; dv.setUint16(o, h, true); o+=2; dv.setInt16(o, x, true); o+=2; dv.setInt16(o, y, true); o+=2; dv.setUint8(o++, flags & 0xFF);
+      new Uint8Array(buf, headerLen).set(bytes); return new Uint8Array(buf);
     }
-
-    function hexPreview(u8, max=512) {
-      const n = Math.min(u8.length, max);
-      let s = '';
-      for (let i = 0; i < n; i++) {
-        if (i % 16 === 0) s += (i ? '\n' : '');
-        s += u8[i].toString(16).padStart(2,'0') + ' ';
-      }
-      if (u8.length > n) s += `\n… (+${u8.length - n} bytes)`;
-      return s;
-    }
+    function chunkUint8(u8, size) { const out=[]; for (let i=0;i<u8.length;i+=size) out.push(u8.subarray(i,i+size)); return out; }
 
     let lastGHIM = null;
-
     function updateImagePreview(green) {
-      const w = Math.max(16, parseInt(document.getElementById('imgW').value, 10) || 160);
-      const h = Math.max(16, parseInt(document.getElementById('imgH').value, 10) || 120);
+      const w = Math.max(16, parseInt(document.getElementById('imgW').value, 10) || 70);
+      const h = Math.max(16, parseInt(document.getElementById('imgH').value, 10) || 70);
       const x = parseInt(document.getElementById('imgX').value, 10) || 0;
       const y = parseInt(document.getElementById('imgY').value, 10) || 0;
       const inv = document.getElementById('imgInvert').checked;
       const full = document.getElementById('imgFull').checked;
-      const chunkSz = Math.max(20, parseInt(document.getElementById('chunkSz').value, 10) || 160);
 
       const canvas = document.getElementById('greenCanvas');
       polygonToCanvas(green, canvas, w, h, inv);
-
-      const ctx = canvas.getContext('2d');
-      const img = ctx.getImageData(0,0,w,h);
-      let bytes = pack1bppMSB(img, w, h);
-      if (inv) { for (let i=0;i<bytes.length;i++) bytes[i] = ~bytes[i]; }
-
-      const flags = (inv ? 0x01 : 0x00) | (full ? 0x02 : 0x00);
-      const wire = buildGHIMBuffer(w, h, x, y, flags, bytes);
-      lastGHIM = wire;
-
-      const bytesPerRow = (w + 7) >> 3;
-      const total = wire.length;
-      const estChunks = Math.ceil(total / chunkSz);
-      const holeTxt = document.getElementById('holeRef').textContent || '?';
-
-      document.getElementById('imgSummary').innerHTML =
-        `Hole: <b>${holeTxt}</b><br>` +
-        `Header: "GHIM" + w=${w} h=${h} x=${x} y=${y} flags=${flags} (invert=${inv?1:0}, full=${full?1:0})<br>` +
-        `Stride: ${bytesPerRow} B/row · Payload: ${bytes.length} B · Total: ${total} B<br>` +
-        `Chunk size (binary): ${chunkSz} → Estimated chunks: ${estChunks}`;
-
-      document.getElementById('imgHex').value = hexPreview(wire, 512);
-    }
-
-    // ===== Slow-lane sender: ASCII metadata + binary payload over controlChar =====
-    function chunkUint8(u8, size) {
-      const out = [];
-      for (let i=0; i<u8.length; i+=size) out.push(u8.subarray(i, i+size));
-      return out;
+      const ctx = canvas.getContext('2d'); const img = ctx.getImageData(0,0,w,h);
+      let bytes = pack1bppMSB(img, w, h); if (inv) { for (let i=0;i<bytes.length;i++) bytes[i] = ~bytes[i]; }
+      const flags = (inv ? 0x01 : 0x00) | (full ? 0x02 : 0x00); lastGHIM = buildGHIMBuffer(w, h, x, y, flags, bytes);
+      if (imageChar) sendGreenImageOverBle(); // auto-send
     }
 
     async function sendGreenImageOverBle() {
-      if (!controlChar) { setStatus('No control characteristic'); return; }
-      if (!lastGHIM)    { setStatus('No image buffer yet — click Preview first'); return; }
-
-      const w = parseInt(document.getElementById('imgW').value, 10) || 160;
-      const h = parseInt(document.getElementById('imgH').value, 10) || 120;
+      if (!imageChar || !lastGHIM) return;
+      const w = parseInt(document.getElementById('imgW').value, 10) || 70;
+      const h = parseInt(document.getElementById('imgH').value, 10) || 70;
       const x = parseInt(document.getElementById('imgX').value, 10) || 0;
       const y = parseInt(document.getElementById('imgY').value, 10) || 0;
       const inv = document.getElementById('imgInvert').checked ? 1 : 0;
       const full = document.getElementById('imgFull').checked ? 1 : 0;
-      const flags = (inv?1:0) | (full?2:0);
-      const stride = (w + 7) >> 3;
-      const len = lastGHIM.length;
-      const hole = document.getElementById('holeRef').textContent || '?';
-      const CHUNK = Math.max(20, parseInt(document.getElementById('chunkSz').value, 10) || 160);
-
+      const flags = (inv?1:0) | (full?2:0); const stride = (w + 7) >> 3; const len = lastGHIM.length;
+      const CHUNK = Math.max(20, parseInt(document.getElementById('chunkSz').value, 10) || 60);
       try {
-        // ASCII BEGIN metadata
-        const begin = `TOPIC:GREENIMG BEGIN W=${w} H=${h} X=${x} Y=${y} FLAGS=${flags} STRIDE=${stride} LEN=${len} HOLE=${hole}\n`;
-        await controlChar.writeValue(new TextEncoder().encode(begin));
-
-        // Binary payload, chunked
+        const meta = `TOPIC:GREENIMG BEGIN W=${w} H=${h} X=${x} Y=${y} FLAGS=${flags} STRIDE=${stride} LEN=${len} HOLE=${document.getElementById('holeRef').textContent||'?'}\n`;
+        await imageChar.writeValue(new TextEncoder().encode(meta));
         const chunks = chunkUint8(lastGHIM, CHUNK);
-        for (const c of chunks) {
-          if (controlChar.writeValueWithoutResponse) await controlChar.writeValueWithoutResponse(c);
-          else                                       await controlChar.writeValue(c);
-          await new Promise(r=>setTimeout(r, 5)); // small pacing to keep stacks happy
-        }
-
-        // ASCII END trailer
-        const end = `TOPIC:GREENIMG END\n`;
-        await controlChar.writeValue(new TextEncoder().encode(end));
-
-        setStatus(`Sent GREENIMG binary payload (${len} bytes in ${chunks.length} chunks)`);
-        setBleStatus('GREENIMG sent (ASCII meta + binary payload)', true);
-      } catch (e) {
-        setStatus('GREENIMG send failed: ' + e.message);
-        setBleStatus('GREENIMG send failed: ' + e.message, false);
-      }
+        for (const c of chunks) { if (imageChar.writeValueWithoutResponse) await imageChar.writeValueWithoutResponse(c); else await imageChar.writeValue(c); await new Promise(r=>setTimeout(r,5)); }
+        await imageChar.writeValue(new TextEncoder().encode(`TOPIC:GREENIMG END\n`));
+        setStatus(`Sent GREENIMG (${len} bytes in ${chunks.length} chunks)`); setBleStatus('GREENIMG sent', true);
+      } catch(e){ setStatus('GREENIMG send failed: '+e.message); setBleStatus('GREENIMG send failed: ' + e.message, false); }
     }
 
-    // ===== Update loop & image auto-preview =====
+    // UI bindings
+    document.getElementById('genImgBtn').onclick = () => {
+      if (!course) { setStatus('No course loaded yet'); return; }
+      let lat, lon; if (lastPos) { lat = lastPos.coords.latitude; lon = lastPos.coords.longitude; } else { const c = map.getCenter(); lat = c.lat; lon = c.lng; }
+      const hole = nearestHoleFeature(lat, lon); const green = hole ? pickGreenForHole(hole) : null; updateImagePreview(green);
+    };
+    document.getElementById('flyBtn').onclick = () => {
+      const sel = document.getElementById('courseSelect').value; if (!sel) return;
+      const [latS, lonS, zoomS] = sel.split(','); const lat = parseFloat(latS), lon = parseFloat(lonS), zoom = parseInt(zoomS||'16',10);
+      map.flyTo([lat, lon], zoom, { animate:true }); onPos({ coords: { latitude: lat, longitude: lon, accuracy: 5, speed: 0 } });
+      lastFetchCenter = null; maybeFetchCourse(lat, lon);
+    };
+
+    // Tap-to-set position fallback
+    map.on('click', (e) => { const lat = e.latlng.lat, lon = e.latlng.lng; onPos({ coords: { latitude: lat, longitude: lon, accuracy:5, speed:0 } }); maybeFetchCourse(lat, lon); });
+
+    // ===== Update loop & auto-send on hole change =====
     let lastHoleRefShown = null;
-
-    function updateYardage() {
+    async function updateYardage() {
       if (!lastPos || !course) return;
-      const lat = lastPos.coords.latitude, lon = lastPos.coords.longitude;
-      const me = turf.point([lon,lat]);
-
-      const hole = nearestHoleFeature(lat, lon);
-      if (!hole) { setStatus('No hole geometry nearby'); return; }
+      const lat = lastPos.coords.latitude, lon = lastPos.coords.longitude; const me = turf.point([lon,lat]);
+      const hole = nearestHoleFeature(lat, lon); if (!hole) { setStatus('No hole geometry nearby'); return; }
       const green = pickGreenForHole(hole);
-
-      const method = document.getElementById('methodSelect').value;
-      document.getElementById('methodLabel').textContent = method;
+      const method = document.getElementById('methodSelect').value; document.getElementById('methodLabel').textContent = method;
 
       let FCB = null;
-      if (green) {
-        FCB = (method === 'perimeter') ? calcFCB_perimeter(green, me) : calcFCB_ray(green, me);
-      } else {
-        const snapped = turf.nearestPointOnLine(hole, me);
-        const lineEnd = turf.point(hole.geometry.coordinates.at(-1));
-        const Cyd = turf.length(turf.lineSlice(snapped, lineEnd, hole), {units:'meters'}) * 1.0936133;
-        FCB = { Fyd: Cyd, Cyd, Byd: Cyd };
-      }
+      if (green) FCB = (method === 'perimeter') ? calcFCB_perimeter(green, me) : calcFCB_ray(green, me);
+      else { const snapped = turf.nearestPointOnLine(hole, me); const lineEnd = turf.point(hole.geometry.coordinates.at(-1)); const Cyd = turf.length(turf.lineSlice(snapped, lineEnd, hole), {units:'meters'}) * 1.0936133; FCB = { Fyd: Cyd, Cyd, Byd: Cyd }; }
 
-      const holeRef = parseInt(hole.properties.ref||'0') || 0;
-      document.getElementById('holeRef').textContent = holeRef || '?';
+      const holeRef = parseInt(hole.properties.ref||'0') || 0; document.getElementById('holeRef').textContent = holeRef || '?';
 
-      // Fast lane UI + BLE (unchanged)
       if (FCB && isFinite(FCB.Cyd)) {
-        const yds = Math.round(FCB.Cyd);
-        document.getElementById('ydCenter').textContent = yds;
-        document.getElementById('ydC').textContent = yds;
-        document.getElementById('trioRow').style.display = 'block';
-        let f=null,b=null;
-        if (isFinite(FCB.Fyd)) { const v=Math.round(FCB.Fyd); document.getElementById('ydF').textContent = v; f=v; }
+        const yds = Math.round(FCB.Cyd); document.getElementById('ydCenter').textContent = yds; document.getElementById('ydC').textContent = yds;
+        let f=null,b=null; if (isFinite(FCB.Fyd)) { const v=Math.round(FCB.Fyd); document.getElementById('ydF').textContent = v; f=v; }
         if (isFinite(FCB.Byd)) { const v=Math.round(FCB.Byd); document.getElementById('ydB').textContent = v; b=v; }
-        if (bleChar) sendBLE(holeRef, yds, f, b);
+
+        const holeChanged = (String(holeRef) !== String(lastHoleRefSent));
+        if (bleChar) {
+          await sendBLE(holeRef, yds, f, b, { force: holeChanged }); // force on hole change
+          if (holeChanged) lastHoleRefSent = String(holeRef);
+        }
       } else {
         document.getElementById('ydCenter').textContent = '—';
-        document.getElementById('trioRow').style.display = 'none';
       }
       setLocStatus('Tracking…');
 
-      // Debug overlay
       debugGroup.clearLayers();
-      if (debugOverlayOn && FCB) {
+      if (FCB) {
         const meLL = [lat, lon];
-        if (FCB.Fpt) {
-          L.polyline([meLL, [FCB.Fpt[1], FCB.Fpt[0]]], { color:'#22c55e', weight:2 }).addTo(debugGroup);
-          L.circleMarker([FCB.Fpt[1], FCB.Fpt[0]], { radius:6, color:'#22c55e', weight:2, fillColor:'#22c55e', fillOpacity:0.9 }).addTo(debugGroup).bindTooltip('Front');
-        }
-        if (FCB.Cpt) {
-          L.circleMarker([FCB.Cpt[1], FCB.Cpt[0]], { radius:5, color:'#3b82f6', weight:2, fillColor:'#3b82f6', fillOpacity:0.9 }).addTo(debugGroup).bindTooltip('Center');
-        }
-        if (FCB.Bpt) {
-          L.polyline([meLL, [FCB.Bpt[1], FCB.Bpt[0]]], { color:'#f97316', weight:2, dashArray:'6,4' }).addTo(debugGroup);
-          L.circleMarker([FCB.Bpt[1], FCB.Bpt[0]], { radius:6, color:'#f97316', weight:2, fillColor:'#f97316', fillOpacity:0.9 }).addTo(debugGroup).bindTooltip('Back');
-        }
-        if (FCB._ray) {
-          const rayLatLngs = FCB._ray.map(([x,y])=>[y,x]);
-          L.polyline(rayLatLngs, { color:'#00e5ff', weight:2, opacity:0.8, dashArray:'2,4' }).addTo(debugGroup);
-        }
+        if (FCB.Fpt) { L.polyline([meLL, [FCB.Fpt[1], FCB.Fpt[0]]], { color:'#22c55e', weight:2 }).addTo(debugGroup);
+          L.circleMarker([FCB.Fpt[1], FCB.Fpt[0]], { radius:6, color:'#22c55e', weight:2, fillColor:'#22c55e', fillOpacity:0.9 }).addTo(debugGroup).bindTooltip('Front'); }
+        if (FCB.Cpt) { L.circleMarker([FCB.Cpt[1], FCB.Cpt[0]], { radius:5, color:'#3b82f6', weight:2, fillColor:'#3b82f6', fillOpacity:0.9 }).addTo(debugGroup).bindTooltip('Center'); }
+        if (FCB.Bpt) { L.polyline([meLL, [FCB.Bpt[1], FCB.Bpt[0]]], { color:'#f97316', weight:2, dashArray:'6,4' }).addTo(debugGroup);
+          L.circleMarker([FCB.Bpt[1], FCB.Bpt[0]], { radius:6, color:'#f97316', weight:2, fillColor:'#f97316', fillOpacity:0.9 }).addTo(debugGroup).bindTooltip('Back'); }
+        const snapped = turf.nearestPointOnLine(hole, me);
+        projIcon.setLatLng([snapped.geometry.coordinates[1], snapped.geometry.coordinates[0]]).addTo(map);
       }
 
-      // Projected point on hole centerline (helper marker)
-      const snapped = turf.nearestPointOnLine(hole, me);
-      projIcon.setLatLng([snapped.geometry.coordinates[1], snapped.geometry.coordinates[0]]).addTo(map);
-
-      // Auto-preview on hole change (keeps lastGHIM current)
+      // Auto-preview + auto-send green when hole changes
       const auto = document.getElementById('autoOnHole').checked;
       const newHole = String(holeRef);
-      if (auto && newHole !== lastHoleRefShown) {
-        updateImagePreview(green);
-        lastHoleRefShown = newHole;
-      }
+      if (auto && newHole !== lastHoleRefShown) { updateImagePreview(green); lastHoleRefShown = newHole; }
     }
-
-    // Manual preview
-    document.getElementById('genImgBtn').onclick = () => {
-      if (!course) { setStatus('No course loaded yet'); return; }
-      let lat, lon;
-      if (lastPos) { lat = lastPos.coords.latitude; lon = lastPos.coords.longitude; }
-      else { const c = map.getCenter(); lat = c.lat; lon = c.lng; }
-      const hole = nearestHoleFeature(lat, lon);
-      const green = hole ? pickGreenForHole(hole) : null;
-      updateImagePreview(green);
-    };
-
-    // Send button
-    document.getElementById('sendImgBtn').onclick = () => {
-      sendGreenImageOverBle();
-    };
-
-    // Fly-to courses
-    document.getElementById('flyBtn').onclick = () => {
-      const sel = document.getElementById('courseSelect').value;
-      if (!sel) return;
-      const [latS, lonS, zoomS] = sel.split(',');
-      const lat = parseFloat(latS), lon = parseFloat(lonS), zoom = parseInt(zoomS||'16',10);
-      map.flyTo([lat, lon], zoom, { animate:true });
-      onPos({ coords: { latitude: lat, longitude: lon, accuracy: 5, speed: 0 } });
-      lastFetchCenter = null;
-      maybeFetchCourse(lat, lon);
-    };
-
-    // Tap-to-set position fallback (for testing without GPS/HTTPS)
-    map.on('click', (e) => {
-      const lat = e.latlng.lat, lon = e.latlng.lng;
-      onPos({ coords: { latitude: lat, longitude: lon, accuracy:5, speed:0 } });
-      maybeFetchCourse(lat, lon);
-    });
 
     // Init
     map.setView([40.0,-100.0], 3);
     startGPS();
-
-    setInterval(()=>{
-      if (course && lastPos) updateYardage();
-      if (lastPos) maybeFetchCourse(lastPos.coords.latitude, lastPos.coords.longitude);
-    }, 1200);
-
+    setInterval(()=>{ if (course && lastPos) updateYardage(); if (lastPos) maybeFetchCourse(lastPos.coords.latitude, lastPos.coords.longitude); }, 1200);
     layout();
   </script>
 </body>
