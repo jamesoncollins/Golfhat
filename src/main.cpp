@@ -32,26 +32,30 @@ static const BLEUUID CHAR_UUID_CONTROL ("0000f00f-0000-1000-8000-00805f9b34fb");
 // ==================== UI PARAMS (fonts, spacing) ====================
 struct FontSet {
   const uint8_t* u8g2_big;       // big yardage font (U8g2)
-  const GFXfont* gfx_label;      // GFX font for labels and F/B
+  const uint8_t* u8g2_fb;        // front/back font (U8g2)  <-- NEW (distinct from HOLE label)
+  const GFXfont* gfx_label;      // GFX font for labels (HOLE)
   const GFXfont* gfx_small;      // GFX small (nullptr => built-in 5x7)
   const char*    name;
 };
 
 // Presets (digits-only *_tn variants where applicable)
 static FontSet FONTSET_LOGI92 = {
-  u8g2_font_logisoso92_tn, // tall/condensed ~92px, digits-only
-  &FreeSansBold12pt7b,
+  u8g2_font_logisoso92_tn, // BIG yardage: very tall/condensed ~92px
+  u8g2_font_fub20_tn,      // F/B: bold ~20px (slightly larger than 12pt label), digits-only
+  &FreeSansBold12pt7b,     // HOLE label font
   nullptr,
   "LOGI92"
 };
 static FontSet FONTSET_BOLD49 = {
-  u8g2_font_fub49_tn,      // very bold ~49px, digits-only
+  u8g2_font_fub49_tn,      // BIG yardage: bold ~49px
+  u8g2_font_fub20_tn,      // F/B: bold ~20px
   &FreeSansBold12pt7b,
   nullptr,
   "BOLD49"
 };
 static FontSet FONTSET_BOLD42 = {
-  u8g2_font_fub42_tn,      // bold ~42px, digits-only
+  u8g2_font_fub42_tn,      // BIG yardage: bold ~42px
+  u8g2_font_fub20_tn,      // F/B: bold ~20px
   &FreeSansBold12pt7b,
   nullptr,
   "BOLD42"
@@ -203,7 +207,6 @@ static void handleControlCommand(const std::string& s) {
     drawScreen(true);
     return;
   }
-
 }
 
 class ControlCallbacks : public NimBLECharacteristicCallbacks {
@@ -269,7 +272,7 @@ static void drawHoleHeader() {
   display.setCursor(4, 18);
   display.print("HOLE");
 
-  useLabelFont();
+  useLabelFont(); // keep HOLE number same style as label
   display.setCursor(4, 36);
   if (gHole) display.print((int)gHole);
   else       display.print("-");
@@ -299,7 +302,7 @@ static void drawDebugLine() {
   u8g2.print(dbg);
 }
 
-// Central band: BIG number (u8g2) right‑justified to F/B (GFX).
+// Central band: BIG number (u8g2) right‑justified to F/B (also u8g2 for F/B).
 static void drawMainBand(bool fullPass) {
   const int16_t W = display.width();
   const int16_t H = display.height();
@@ -314,17 +317,22 @@ static void drawMainBand(bool fullPass) {
   if (showFB) { snprintf(fBuf, sizeof(fBuf), "%u", (unsigned)gFrontY);
                 snprintf(bBuf, sizeof(bBuf), "%u", (unsigned)gBackY); }
 
-  // Measure right column with label font
-  useLabelFont();
-  int16_t x1,y1; uint16_t fW=0,fH=0,bW=0,bH=0;
+  // ---- Measure right column using U8g2 FB font (not GFX) ----
+  int16_t x1,y1; uint16_t dummyW=0,dummyH=0; // (unused)
+  u8g2.setFont(UI_FONT->u8g2_fb);
+  int fW = 0, bW = 0, fH = 0, bH = 0;
   if (showFB) {
-    display.getTextBounds(fBuf, 0, 0, &x1, &y1, &fW, &fH);
-    display.getTextBounds(bBuf, 0, 0, &x1, &y1, &bW, &bH);
+    fW = u8g2.getUTF8Width(fBuf);
+    bW = u8g2.getUTF8Width(bBuf);
+    int asc = u8g2.getFontAscent();
+    int des = u8g2.getFontDescent(); // negative
+    int fh = asc - des;
+    fH = fh; bH = fh;
   }
-  const uint16_t rightColW = showFB ? max(fW, bW) : 0;
-  const uint16_t rightColH = showFB ? (fH + UI::FB_STACK_GAP + bH) : 0;
+  const int rightColW = showFB ? max(fW, bW) : 0;
+  const int rightColH = showFB ? (fH + UI::FB_STACK_GAP + bH) : 0;
 
-  // Measure BIG with current U8g2 font
+  // ---- Measure BIG with current U8g2 font ----
   u8g2.setFont(UI_FONT->u8g2_big);
   int bigW = u8g2.getUTF8Width(bigBuf);
   int bigAscent = u8g2.getFontAscent();
@@ -361,14 +369,23 @@ static void drawMainBand(bool fullPass) {
     u8g2.setCursor(bigLeft, bigBaseline);
     u8g2.print(bigBuf);
 
-    // Draw F/B column (slightly nudged up)
+    // Draw F/B column (U8g2, bold ~20px), right aligned to screen edge
     if (showFB) {
-      useLabelFont();
+      u8g2.setFont(UI_FONT->u8g2_fb);
+      // height again with FB font
+      int asc = u8g2.getFontAscent();
+      int des = u8g2.getFontDescent();
+      int fh = asc - des;
+
       const int16_t colTop = bigBaseline - (int)rightColH / 2 - UI::FB_NUDGE_UP;
-      display.setCursor(rightX - (int)fW, colTop);
-      display.print(fBuf);
-      display.setCursor(rightX - (int)bW, colTop + (int)fH + UI::FB_STACK_GAP);
-      display.print(bBuf);
+
+      // Front (top)
+      u8g2.setCursor(rightX - fW, colTop);
+      u8g2.print(fBuf);
+
+      // Back (bottom)
+      u8g2.setCursor(rightX - bW, colTop + fh + UI::FB_STACK_GAP);
+      u8g2.print(bBuf);
     }
   } while (display.nextPage());
 }
@@ -392,10 +409,10 @@ static void drawScreen(bool forceFull) {
     display.setFullWindow();
     display.firstPage();
     do {
-      display.fillScreen(GxEPD_WHITE);      
-      drawMainBand(true);    // center/right
+      display.fillScreen(GxEPD_WHITE);
+      drawMainBand(true);    // center/right first so its partial window never covers HOLE
       drawDebugLine();       // bottom-left (if enabled)
-      drawHoleHeader();      // left strip
+      drawHoleHeader();      // left strip (drawn last → guaranteed visible)
     } while (display.nextPage());
     lastFullRefreshMs = now;
     partialCount = 0;
@@ -414,7 +431,7 @@ static void drawScreen(bool forceFull) {
 // ==================== Setup / Loop ====================
 void setup() {
   Serial.begin(115200);
-  Serial.println("\nYardage EPD (BLE) — LOGI72 big digits, right-justified, header restored, F/B nudged up");
+  Serial.println("\nYardage EPD (BLE) — LOGI92 big digits, F/B bold 20px, HOLE 12pt, right-justified");
 
   SPI.begin(EPD_SCLK, EPD_MISO, EPD_MOSI, EPD_CS);
 
@@ -462,7 +479,6 @@ void loop() {
     if (ch == '1') { UI_FONT = &FONTSET_LOGI92; drawScreen(true); }
     if (ch == '2') { UI_FONT = &FONTSET_BOLD49; drawScreen(true); }
     if (ch == '3') { UI_FONT = &FONTSET_BOLD42; drawScreen(true); }
-    if (ch == '4') { UI_FONT = &FONTSET_BOLD42; drawScreen(true); }
   }
 
   bool staleNow = isStale();
