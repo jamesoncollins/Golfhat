@@ -34,7 +34,6 @@
   <header id="hdr">
     <div class="row">
       <button id="locBtn" class="btn">Locate</button>
-      <button id="loadBtn" class="btn">Load</button>
       <button id="followBtn" class="btn">Follow: ON</button>
       <button id="debugBtn" class="btn">Debug: OFF</button>
 
@@ -61,7 +60,7 @@
       <label>Service:&nbsp;<input id="svcUuid" value="0000f00d-0000-1000-8000-00805f9b34fb"></label>
       <label>Char:&nbsp;<input id="chrUuid" value="0000f00e-0000-1000-8000-00805f9b34fb"></label>
       <label><input type="checkbox" id="asciiMode"> ASCII</label>
-      <small>(Center = distance to green centroid. F/B per selected method.)</small>
+      <small>(Center = distance to green centroid. F/B per selected method. Auto-loading enabled.)</small>
     </div>
   </header>
 
@@ -93,7 +92,7 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
   <script>
-    // --- layout so map sits under header ---
+    // --- dynamic layout so the map always sits under the header ---
     const hdr = document.getElementById('hdr');
     const layout = () => document.documentElement.style.setProperty('--headerH', hdr.offsetHeight + 'px');
     new ResizeObserver(layout).observe(hdr); window.addEventListener('load', layout);
@@ -145,10 +144,12 @@
       youIcon.setLatLng([lat,lon]).addTo(map);
       if (follow) map.setView([lat,lon], Math.max(map.getZoom(), 16), { animate:true });
       updateYardage();
+      // kick auto-fetcher
+      maybeFetchCourse(lat, lon);
     }
     function onPosErr(err) { setLocStatus('Location error: ' + err.message + ' (use HTTPS)'); }
 
-    // ===== Overpass =====
+    // ===== Overpass (OSM) =====
     function bboxAround(lat, lon, meters) {
       const dLat = meters / 111320;
       const dLon = meters / (40075000 * Math.cos(lat * Math.PI/180) / 360);
@@ -200,8 +201,51 @@ out body;`
       setStatus('Course loaded.');
       updateYardage();
     }
-    document.getElementById('loadBtn').onclick = () => { if (!lastPos) setStatus('Need GPS first'); else loadCourseAround(lastPos.coords.latitude, lastPos.coords.longitude).catch(e=>setStatus(e.message||String(e))); };
 
+    // ===== Auto-loader (movement/time/cooldown) =====
+    const FETCH_RADIUS_M = 1500;
+    const REQUERY_MOVE_M = 400;           // re-fetch if moved > 400 m from last fetch center
+    const REQUERY_MAX_AGE_MS = 12*60*1000; // or if older than 12 min
+    const FETCH_COOLDOWN_MS = 45*1000;     // never more often than every 45 s
+
+    let lastFetchCenter = null;  // [lat, lon]
+    let lastFetchAt = 0;
+    let fetching = false;
+
+    function needFetch(lat, lon) {
+      if (!lastFetchCenter) return true;
+      const movedM = turf.distance(
+        turf.point([lastFetchCenter[1], lastFetchCenter[0]]),
+        turf.point([lon, lat]),
+        { units: 'meters' }
+      );
+      const age = Date.now() - lastFetchAt;
+      if (age > REQUERY_MAX_AGE_MS) return true;
+      if (movedM > REQUERY_MOVE_M) return true;
+      return false;
+    }
+
+    async function maybeFetchCourse(lat, lon) {
+      if (fetching) return;
+      const since = Date.now() - lastFetchAt;
+      if (since < FETCH_COOLDOWN_MS) return;
+      if (!needFetch(lat, lon)) return;
+
+      fetching = true;
+      try {
+        await loadCourseAround(lat, lon);
+        lastFetchCenter = [lat, lon];
+        lastFetchAt = Date.now();
+      } catch (e) {
+        // Light backoff: push 'lastFetchAt' backwards so next attempt isn't immediate
+        lastFetchAt = Date.now() - (FETCH_COOLDOWN_MS / 2);
+        setStatus('Fetch failed; will retry later.');
+      } finally {
+        fetching = false;
+      }
+    }
+
+    // ===== F/C/B methods =====
     function nearestHoleFeature(lat, lon) {
       if (!course || !course.holes.length) return null;
       const p = turf.point([lon, lat]);
@@ -213,20 +257,16 @@ out body;`
       return best ? best.f : null;
     }
 
-    // ---------- Method A: Ray via centroid ----------
     function calcFCB_ray(green, mePoint) {
       try {
         const centroid = turf.centroid(green);
         const Cyd = turf.distance(mePoint, centroid, {units:'meters'}) * 1.0936133;
-
         const brg = turf.bearing(mePoint, centroid);
         const far = turf.destination(mePoint, 2, brg, { units:'kilometers' });
         let ray = turf.lineString([mePoint.geometry.coordinates, far.geometry.coordinates]);
         const boundary = turf.polygonToLine(green);
         let inter = turf.lineIntersect(ray, boundary);
         if (inter.features.length < 1) return { Cyd };
-
-        // sort intersections by distance from me
         const pts = inter.features.map(pt=>pt.geometry.coordinates).sort((a,b)=>
           turf.distance(mePoint, turf.point(a), {units:'meters'}) -
           turf.distance(mePoint, turf.point(b), {units:'meters'})
@@ -234,26 +274,20 @@ out body;`
         const Fpt = pts[0], Bpt = pts[pts.length - 1];
         const Fyd = turf.distance(mePoint, turf.point(Fpt), {units:'meters'}) * 1.0936133;
         const Byd = turf.distance(mePoint, turf.point(Bpt), {units:'meters'}) * 1.0936133;
-
         return { Fyd, Cyd, Byd, Fpt, Cpt: centroid.geometry.coordinates, Bpt, _ray: ray.geometry.coordinates };
       } catch { return null; }
     }
 
-    // ---------- Method B: Perimeter scan ----------
     function calcFCB_perimeter(green, mePoint) {
       try {
         const centroid = turf.centroid(green);
         const Cyd = turf.distance(mePoint, centroid, {units:'meters'}) * 1.0936133;
-
-        const boundary = turf.flatten(turf.polygonToLine(green)); // FC of LineStrings
+        const boundary = turf.flatten(turf.polygonToLine(green));
         let Fpt = null, Bpt = null, minM = Infinity, maxM = -Infinity;
-
         for (const feat of boundary.features) {
-          // closest point on segment for Front
           const near = turf.nearestPointOnLine(feat, mePoint);
           const dm = turf.distance(mePoint, near, { units:'meters' });
           if (dm < minM) { minM = dm; Fpt = near.geometry.coordinates; }
-          // farthest vertex for Back (simple & robust)
           for (const c of feat.geometry.coordinates) {
             const dv = turf.distance(mePoint, turf.point(c), { units:'meters' });
             if (dv > maxM) { maxM = dv; Bpt = c; }
@@ -263,6 +297,20 @@ out body;`
         const Byd = maxM * 1.0936133;
         return { Fyd, Cyd, Byd, Fpt, Cpt: centroid.geometry.coordinates, Bpt };
       } catch { return null; }
+    }
+
+    function pickGreenForHole(hole) {
+      if (!course || !course.greens?.length) return null;
+      const coords = hole.geometry.coordinates;
+      const end = coords[coords.length - 1];
+      const endPt = turf.point(end);
+      let best=null;
+      for (const g of course.greens) {
+        const c = turf.centroid(g);
+        const d = turf.distance(c, endPt, { units:'meters' });
+        if (!best || d < best.d) best = { g, d };
+      }
+      return best ? best.g : null;
     }
 
     // ===== BLE =====
@@ -304,20 +352,6 @@ out body;`
     document.getElementById('pingBtn').onclick = ()=> sendBLE(99,321);
 
     // ===== Update loop =====
-    function pickGreenForHole(hole) {
-      if (!course || !course.greens?.length) return null;
-      const coords = hole.geometry.coordinates;
-      const end = coords[coords.length - 1];
-      const endPt = turf.point(end);
-      let best=null;
-      for (const g of course.greens) {
-        const c = turf.centroid(g);
-        const d = turf.distance(c, endPt, { units:'meters' });
-        if (!best || d < best.d) best = { g, d };
-      }
-      return best ? best.g : null;
-    }
-
     function updateYardage() {
       if (!lastPos || !course) return;
       const lat = lastPos.coords.latitude, lon = lastPos.coords.longitude;
@@ -334,14 +368,12 @@ out body;`
       if (green) {
         FCB = (method === 'perimeter') ? calcFCB_perimeter(green, me) : calcFCB_ray(green, me);
       } else {
-        // fallback to centerline end if no green polygon
         const snapped = turf.nearestPointOnLine(hole, me);
         const lineEnd = turf.point(hole.geometry.coordinates.at(-1));
         const Cyd = turf.length(turf.lineSlice(snapped, lineEnd, hole), {units:'meters'}) * 1.0936133;
         FCB = { Fyd: Cyd, Cyd, Byd: Cyd };
       }
 
-      // UI updates
       const holeRef = parseInt(hole.properties.ref||'0') || 0;
       document.getElementById('holeRef').textContent = holeRef || '?';
 
@@ -352,9 +384,7 @@ out body;`
         document.getElementById('trioRow').style.display = 'block';
         if (isFinite(FCB.Fyd)) document.getElementById('ydF').textContent = Math.round(FCB.Fyd);
         if (isFinite(FCB.Byd)) document.getElementById('ydB').textContent = Math.round(FCB.Byd);
-
-        // BLE send the center value
-        if (bleChar) sendBLE(holeRef, yds);
+        if (bleChar) sendBLE(holeRef, yds); // send center
       } else {
         document.getElementById('ydCenter').textContent = '—';
         document.getElementById('trioRow').style.display = 'none';
@@ -395,21 +425,26 @@ out body;`
       const lat = parseFloat(latS), lon = parseFloat(lonS), zoom = parseInt(zoomS||'16',10);
       map.flyTo([lat, lon], zoom, { animate:true });
       onPos({ coords: { latitude: lat, longitude: lon, accuracy: 5, speed: 0 } });
-      loadCourseAround(lat, lon).catch(e=>setStatus(e.message||String(e)));
+      // force a fetch at this location
+      lastFetchCenter = null;
+      maybeFetchCourse(lat, lon);
     };
 
     // Tap-to-set position fallback (for testing without GPS/HTTPS)
-    map.on('click', (e) => onPos({ coords: { latitude:e.latlng.lat, longitude:e.latlng.lng, accuracy:5, speed:0 } }));
+    map.on('click', (e) => {
+      const lat = e.latlng.lat, lon = e.latlng.lng;
+      onPos({ coords: { latitude: lat, longitude: lon, accuracy:5, speed:0 } });
+      maybeFetchCourse(lat, lon);
+    });
 
     // Init
     map.setView([40.0,-100.0], 3);
     startGPS();
 
-    // After GPS, load once; then update ~1.2 Hz
-    let autoLoaded=false;
+    // UI tick: yardage render; also re-check fetch conditions
     setInterval(()=>{
-      if (!autoLoaded && lastPos && !course) { autoLoaded = true; loadCourseAround(lastPos.coords.latitude, lastPos.coords.longitude).catch(e=>setStatus(e.message||String(e))); }
       if (course && lastPos) updateYardage();
+      if (lastPos) maybeFetchCourse(lastPos.coords.latitude, lastPos.coords.longitude);
     }, 1200);
 
     // keep map under header as header wraps on mobile
