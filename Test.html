@@ -2,44 +2,49 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Golf Yardage → ESP32 e-Paper (BLE)</title>
+  <title>Golf Yardage → ESP32 e‑Paper (BLE)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <link rel="preconnect" href="https://unpkg.com">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
+    :root { --headerH: 118px; }
     html, body { height:100%; margin:0; background:#0b0f14; color:#e9eef3; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
-    #map { position:absolute; inset:118px 0 0 0; }
-    header { position:fixed; top:0; left:0; right:0; height:auto; display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px; padding:8px 12px; background:#111823; border-bottom:1px solid #1f2937; z-index:1000; }
-    header .btn { background:#1f2937; color:#e9eef3; border:1px solid #2b3b50; padding:10px 14px; border-radius:12px; font-weight:700; font-size:14px; }
-    header input { background:#0e1520; color:#e9eef3; border:1px solid #233044; border-radius:8px; padding:8px 10px; width:260px; }
+    #map { position:absolute; top:var(--headerH); left:0; right:0; bottom:0; }
+    header { position:fixed; top:0; left:0; right:0; display:flex; flex-wrap:wrap; gap:8px 10px; padding:8px 12px; background:#111823; border-bottom:1px solid #1f2937; z-index:1000; }
+    header .btn { background:#1f2937; color:#e9eef3; border:1px solid #2b3b50; padding:8px 10px; border-radius:10px; font-weight:700; font-size:14px; }
+    header input { background:#0e1520; color:#e9eef3; border:1px solid #233044; border-radius:8px; padding:6px 8px; width:240px; }
     .row { display:flex; gap:10px; align-items:center; width:100%; }
     .row small { opacity:.8; }
     #yardage { position:fixed; bottom:12px; left:12px; right:12px; z-index:1000; background:#0e1520cc; backdrop-filter: blur(6px); border:1px solid #1f2937; border-radius:14px; padding:10px 12px; display:flex; align-items:center; justify-content:space-between; }
     #yardage .big { font-size:28px; font-weight:800; letter-spacing:0.5px; }
     #yardage .small { font-size:12px; opacity:0.8; }
     .pill { display:inline-block; padding:2px 8px; border:1px solid #2b3b50; border-radius:999px; font-size:12px; margin-left:6px; }
-    .legend { position:fixed; right:12px; top:130px; background:#0e1520cc; border:1px solid #1f2937; border-radius:10px; padding:6px 8px; z-index:1000; font-size:12px; }
+    .legend { position:fixed; right:12px; top:calc(var(--headerH) + 12px); background:#0e1520cc; border:1px solid #1f2937; border-radius:10px; padding:6px 8px; z-index:1000; font-size:12px; }
     .legend div { margin:4px 0; }
-    a { color:#9ad0ff; text-decoration:none; }
-    label { font-size:12px; opacity:.85; }
+    label { font-size:12px; opacity:.9; }
+    @media (max-width: 520px) {
+      header .btn { padding:6px 8px; font-size:12px; }
+      header input { width: 170px; }
+    }
   </style>
 </head>
 <body>
-  <header>
+  <header id="hdr">
     <div class="row">
       <button id="locBtn" class="btn">Locate</button>
-      <button id="loadBtn" class="btn">Load Course</button>
+      <button id="loadBtn" class="btn">Load</button>
       <button id="followBtn" class="btn">Follow: ON</button>
+      <button id="debugBtn" class="btn">Debug: OFF</button>
       <button id="bleBtn" class="btn">Connect BLE</button>
       <button id="pingBtn" class="btn">Send Test</button>
       <small id="bleState">BLE: OFF</small>
       <small id="status" style="margin-left:auto;">Ready</small>
     </div>
     <div class="row">
-      <label>Service UUID:&nbsp;<input id="svcUuid" value="0000f00d-0000-1000-8000-00805f9b34fb"></label>
-      <label>Characteristic UUID:&nbsp;<input id="chrUuid" value="0000f00e-0000-1000-8000-00805f9b34fb"></label>
-      <label><input type="checkbox" id="asciiMode"> ASCII mode</label>
-      <small>(ASCII sends lines like: <code>H3 152\n</code>; binary sends 4 bytes: uint16 yards (LE), uint8 hole, uint8 flags)</small>
+      <label>Service:&nbsp;<input id="svcUuid" value="0000f00d-0000-1000-8000-00805f9b34fb"></label>
+      <label>Char:&nbsp;<input id="chrUuid" value="0000f00e-0000-1000-8000-00805f9b34fb"></label>
+      <label><input type="checkbox" id="asciiMode"> ASCII</label>
+      <small>(Big number = center. F/B shown below.)</small>
     </div>
   </header>
 
@@ -48,7 +53,7 @@
   <div id="yardage">
     <div>
       <div class="small">Hole <span id="holeRef">—</span></div>
-      <div class="big"><span id="ydCenter">—</span> yd <span id="fcb" class="small" style="display:none">(<span id="ydF">—</span> F / <span id="ydC">—</span> C / <span id="ydB">—</span> B)</span></div>
+      <div class="big"><span id="ydCenter">—</span> yd <span id="fb" class="small" style="display:none">(<span id="ydF">—</span> F / <span id="ydB">—</span> B)</span></div>
       <div class="small" id="locStatus">Waiting for location…</div>
     </div>
     <div>
@@ -62,12 +67,20 @@
     <div><span style="display:inline-block;width:10px;height:10px;background:#10b981;border-radius:2px;margin-right:6px"></span> Green</div>
     <div><span style="display:inline-block;width:10px;height:10px;background:#f59e0b;border-radius:2px;margin-right:6px"></span> Tee</div>
     <div><span style="display:inline-block;width:10px;height:10px;background:#ef4444;border-radius:2px;margin-right:6px"></span> You</div>
+    <div><span style="display:inline-block;width:10px;height:10px;background:#00e5ff;border-radius:2px;margin-right:6px"></span> Debug ray</div>
+    <div><span style="display:inline-block;width:10px;height:10px;background:#22c55e;border-radius:2px;margin-right:6px"></span> Front point</div>
+    <div><span style="display:inline-block;width:10px;height:10px;background:#f97316;border-radius:2px;margin-right:6px"></span> Back point</div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
   <script>
-    // ===== MAP UI =====
+    // --- dynamic layout so the map always sits under the header ---
+    const hdr = document.getElementById('hdr');
+    const layout = () => document.documentElement.style.setProperty('--headerH', hdr.offsetHeight + 'px');
+    new ResizeObserver(layout).observe(hdr); window.addEventListener('load', layout);
+
+    // ===== MAP =====
     const map = L.map('map', { zoomSnap: 0.25, zoomControl: false });
     L.control.zoom({ position: 'bottomright' }).addTo(map);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap' }).addTo(map);
@@ -79,20 +92,18 @@
     const greensLayer = L.geoJSON(null, { style: { color:'#10b981', weight:2, fillOpacity:0.1, fillColor:'#10b981' } }).addTo(map);
     const teesLayer = L.geoJSON(null, { style: { color:'#f59e0b', weight:2, fillOpacity:0.1, fillColor:'#f59e0b' } }).addTo(map);
 
+    // Debug layers
+    const debugGroup = L.layerGroup().addTo(map);
+    let debugOn = false;
+    const debugBtn = document.getElementById('debugBtn');
+    debugBtn.onclick = () => { debugOn = !debugOn; debugBtn.textContent = 'Debug: ' + (debugOn ? 'ON' : 'OFF'); if (!debugOn) debugGroup.clearLayers(); };
+
     let follow = true;
     document.getElementById('followBtn').onclick = () => {
       follow = !follow;
       document.getElementById('followBtn').textContent = `Follow: ${follow? 'ON' : 'OFF'}`;
     };
-
-    document.getElementById('locBtn').onclick = () => {
-      if (lastPos) map.setView([lastPos.coords.latitude, lastPos.coords.longitude], 16, { animate:true });
-    };
-
-    document.getElementById('loadBtn').onclick = () => {
-      if (!lastPos) { setStatus('Need GPS before loading course.'); return; }
-      loadCourseAround(lastPos.coords.latitude, lastPos.coords.longitude).catch(err => setStatus(err.message || String(err)));
-    };
+    document.getElementById('locBtn').onclick = () => { if (lastPos) map.setView([lastPos.coords.latitude, lastPos.coords.longitude], 16, { animate:true }); };
 
     function setStatus(msg) { document.getElementById('status').textContent = msg; }
     function setLocStatus(msg) { document.getElementById('locStatus').textContent = msg; }
@@ -100,60 +111,47 @@
     // ===== GPS =====
     let lastPos = null;
     function startGPS() {
-      if (!('geolocation' in navigator)) { setLocStatus('Geolocation not supported in this browser.'); return; }
+      if (!('geolocation' in navigator)) { setLocStatus('Geolocation not supported'); return; }
       navigator.geolocation.watchPosition(onPos, onPosErr, { enableHighAccuracy:true, maximumAge:1000, timeout:10000 });
     }
     function onPos(pos) {
       lastPos = pos;
-      const lat = pos.coords.latitude, lon = pos.coords.longitude;
-      const acc = pos.coords.accuracy || 0;
-      const spd = pos.coords.speed != null ? pos.coords.speed : 0;
-      document.getElementById('gpsAcc').textContent = acc.toFixed(0) + ' m';
-      document.getElementById('speed').textContent = (spd||0).toFixed(1) + ' m/s';
+      const {latitude:lat, longitude:lon, accuracy:acc, speed} = pos.coords;
+      document.getElementById('gpsAcc').textContent = (acc||0).toFixed(0) + ' m';
+      document.getElementById('speed').textContent = ((speed||0)).toFixed(1) + ' m/s';
       youIcon.setLatLng([lat,lon]).addTo(map);
       if (follow) map.setView([lat,lon], Math.max(map.getZoom(), 16), { animate:true });
       updateYardage();
     }
-    function onPosErr(err) {
-      setLocStatus('Location error: ' + err.message + ' (Tip: open via HTTPS for GPS)');
-    }
+    function onPosErr(err) { setLocStatus('Location error: ' + err.message + ' (use HTTPS)'); }
 
-    // ===== Overpass (OSM) =====
+    // ===== Overpass =====
     function bboxAround(lat, lon, meters) {
       const dLat = meters / 111320;
       const dLon = meters / (40075000 * Math.cos(lat * Math.PI/180) / 360);
       return [lat - dLat, lon - dLon, lat + dLat, lon + dLon];
     }
-
     function osmToGeoJSON(data) {
       const nodes = new Map();
       for (const el of data.elements) if (el.type==='node') nodes.set(el.id, [el.lat, el.lon]);
       const fc = { type:'FeatureCollection', features:[] };
-      for (const el of data.elements) {
-        if (el.type==='way') {
-          const coords = el.nodes.map(id => nodes.get(id)).filter(Boolean).map(([lat,lon]) => [lon,lat]);
-          if (coords.length < 2) continue;
-          const tags = el.tags || {};
-          if (tags.golf === 'hole') {
-            fc.features.push({ type:'Feature', geometry:{ type:'LineString', coordinates:coords }, properties:{ type:'hole', ref: tags.ref || '', name: tags.name || '', id: el.id } });
-          } else if (tags.golf === 'green') {
-            fc.features.push({ type:'Feature', geometry:{ type:'Polygon', coordinates:[coords] }, properties:{ type:'green', ref: tags.ref || '', id: el.id } });
-          } else if (tags.golf === 'tee') {
-            fc.features.push({ type:'Feature', geometry:{ type:'Polygon', coordinates:[coords] }, properties:{ type:'tee', ref: tags.ref || '', id: el.id } });
-          } else if (tags.leisure === 'golf_course') {
-            fc.features.push({ type:'Feature', geometry:{ type:'Polygon', coordinates:[coords] }, properties:{ type:'course', name: tags.name || '', id: el.id } });
-          }
-        }
+      for (const el of data.elements) if (el.type==='way') {
+        const coords = el.nodes.map(id => nodes.get(id)).filter(Boolean).map(([lat,lon]) => [lon,lat]);
+        if (coords.length < 2) continue;
+        const tags = el.tags || {};
+        if (tags.golf === 'hole') fc.features.push({ type:'Feature', geometry:{ type:'LineString', coordinates:coords }, properties:{ type:'hole', ref: tags.ref||'', name: tags.name||'', id: el.id } });
+        else if (tags.golf === 'green') fc.features.push({ type:'Feature', geometry:{ type:'Polygon', coordinates:[coords] }, properties:{ type:'green', ref: tags.ref||'', id: el.id } });
+        else if (tags.golf === 'tee') fc.features.push({ type:'Feature', geometry:{ type:'Polygon', coordinates:[coords] }, properties:{ type:'tee', ref: tags.ref||'', id: el.id } });
+        else if (tags.leisure === 'golf_course') fc.features.push({ type:'Feature', geometry:{ type:'Polygon', coordinates:[coords] }, properties:{ type:'course', name: tags.name||'', id: el.id } });
       }
       return fc;
     }
-
-    let course = null; // {holes, greens, tees}
+    let course = null;
     async function loadCourseAround(lat, lon) {
       setStatus('Loading course from OSM…');
       const bb = bboxAround(lat, lon, 1500);
       const q = 'data=' + encodeURIComponent(
-        `[out:json][timeout:25];
+`[out:json][timeout:25];
 (
   way["leisure"="golf_course"](${bb[0]},${bb[1]},${bb[2]},${bb[3]});
   way["golf"="hole"](${bb[0]},${bb[1]},${bb[2]},${bb[3]});
@@ -163,31 +161,23 @@
 (._;>;);
 out body;`
       );
-      const json = await fetch('https://overpass-api.de/api/interpreter', {
-        method:'POST', headers:{ 'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8' }, body:q
-      }).then(r=>r.json());
+      const json = await fetch('https://overpass-api.de/api/interpreter', { method:'POST', headers:{ 'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8' }, body:q }).then(r=>r.json());
       const geo = osmToGeoJSON(json);
-
       const holes = geo.features.filter(f=>f.properties.type==='hole');
       const greens = geo.features.filter(f=>f.properties.type==='green');
       const tees = geo.features.filter(f=>f.properties.type==='tee');
-
       holesLayer.clearLayers(); greensLayer.clearLayers(); teesLayer.clearLayers();
       holesLayer.addData({ type:'FeatureCollection', features: holes });
       greensLayer.addData({ type:'FeatureCollection', features: greens });
       teesLayer.addData({ type:'FeatureCollection', features: tees });
-
-      if (holes.length === 0 && greens.length === 0) {
-        setStatus('No golf features found nearby. Move closer to a course.');
-        return;
-      }
-
+      if (!holes.length && !greens.length) { setStatus('No golf features nearby'); return; }
       course = { holes, greens, tees };
       const all = L.featureGroup([holesLayer, greensLayer, teesLayer]);
       try { map.fitBounds(all.getBounds(), { padding:[20,20] }); } catch {}
       setStatus('Course loaded.');
       updateYardage();
     }
+    document.getElementById('loadBtn').onclick = () => { if (!lastPos) setStatus('Need GPS first'); else loadCourseAround(lastPos.coords.latitude, lastPos.coords.longitude).catch(e=>setStatus(e.message||String(e))); };
 
     function nearestHoleFeature(lat, lon) {
       if (!course || !course.holes.length) return null;
@@ -200,13 +190,135 @@ out body;`
       return best ? best.f : null;
     }
 
+    // --- Robust F/B via ray -> polygon boundary intersections ---
+    function frontBackViaRay(green, mePoint) {
+      try {
+        const centroid = turf.centroid(green);
+        const brg = turf.bearing(mePoint, centroid);
+        // extend ray 500 m beyond centroid; retry longer if needed
+        const far = turf.destination(mePoint, 0.5, brg, { units: 'kilometers' });
+        let ray = turf.lineString([mePoint.geometry.coordinates, far.geometry.coordinates]);
+        const boundary = turf.polygonToLine(green);
+        let inter = turf.lineIntersect(ray, boundary);
+        if (inter.features.length < 1) {
+          const far2 = turf.destination(mePoint, 2, brg, { units: 'kilometers' });
+          ray = turf.lineString([mePoint.geometry.coordinates, far2.geometry.coordinates]);
+          inter = turf.lineIntersect(ray, boundary);
+        }
+        if (inter.features.length < 1) return null;
+
+        // sort intersections by distance from me along the ray
+        const pts = inter.features.map(pt=>pt.geometry.coordinates);
+        pts.sort((a,b) =>
+          turf.distance(mePoint, turf.point(a), {units:'meters'}) -
+          turf.distance(mePoint, turf.point(b), {units:'meters'})
+        );
+        const frontPt = pts[0];
+        const backPt  = pts[pts.length - 1];
+
+        const Fm = turf.distance(mePoint, turf.point(frontPt), {units:'meters'});
+        const Bm = turf.distance(mePoint, turf.point(backPt),  {units:'meters'});
+        return { Fyd: Fm * 1.0936133, Byd: Bm * 1.0936133, frontPt, backPt, ray };
+      } catch { return null; }
+    }
+
+    // ===== BLE =====
+    let bleDevice=null, bleChar=null, lastBleSend=0, lastSent={y:-1,h:-1};
+    function getUUIDs(){ return { service: svcUuid.value.trim(), char: chrUuid.value.trim(), ascii: asciiMode.checked }; }
+    async function connectBLE() {
+      if (!navigator.bluetooth) { setStatus('Web Bluetooth not supported'); return; }
+      const { service, char } = getUUIDs();
+      try {
+        setStatus('Requesting BLE device…');
+        bleDevice = await navigator.bluetooth.requestDevice({ filters:[{ services:[service] }], optionalServices:[service] });
+        bleDevice.addEventListener('gattserverdisconnected', ()=>{ bleState.textContent='BLE: DISC'; bleChar=null; });
+        const server = await bleDevice.gatt.connect();
+        const svc = await server.getPrimaryService(service);
+        bleChar = await svc.getCharacteristic(char);
+        bleState.textContent='BLE: ON'; setStatus('BLE connected.');
+      } catch(e){ setStatus('BLE error: '+e.message); }
+    }
+    document.getElementById('bleBtn').onclick = connectBLE;
+    async function sendBLE(holeNum, yards) {
+      if (!bleChar) return;
+      const now = Date.now();
+      if (now - lastBleSend < 900) return;
+      if (yards === lastSent.y && holeNum === lastSent.h) return;
+      const { ascii } = getUUIDs();
+      try{
+        if (ascii) {
+          const s = `H${holeNum||0} ${Math.max(0,Math.min(9999,Math.round(yards)))}\n`;
+          await bleChar.writeValue(new TextEncoder().encode(s));
+        } else {
+          const buf=new ArrayBuffer(4), dv=new DataView(buf);
+          const y = Math.max(0, Math.min(65535, Math.round(yards)));
+          dv.setUint16(0, y, true); dv.setUint8(2, Math.max(0,Math.min(255,holeNum||0))); dv.setUint8(3, 0);
+          if (bleChar.writeValueWithoutResponse) await bleChar.writeValueWithoutResponse(buf); else await bleChar.writeValue(buf);
+        }
+        lastBleSend = now; lastSent = { y: Math.round(yards), h: holeNum||0 };
+      }catch(e){ setStatus('BLE write failed: '+e.message); }
+    }
+    document.getElementById('pingBtn').onclick = ()=> sendBLE(99,321);
+
+    // ===== Update loop =====
+    function updateYardage() {
+      if (!lastPos || !course) return;
+      const lat = lastPos.coords.latitude, lon = lastPos.coords.longitude;
+      const me = turf.point([lon,lat]);
+
+      const hole = nearestHoleFeature(lat, lon);
+      if (!hole) { setStatus('No hole geometry nearby'); return; }
+
+      // Big number = center (distance to green centroid)
+      const green = (course.greens||[]).length ? pickGreenForHole(hole) : null;
+      const snapped = turf.nearestPointOnLine(hole, me);
+      const centroid = green ? turf.centroid(green) : null;
+      let centerYd = centroid ? turf.distance(me, centroid, {units:'meters'}) * 1.0936133
+                              : turf.length(turf.lineSlice(snapped, turf.point(hole.geometry.coordinates.at(-1)), hole), {units:'meters'}) * 1.0936133;
+
+      const holeRef = parseInt(hole.properties.ref||'0') || 0;
+      const yds = Math.round(centerYd);
+      document.getElementById('ydCenter').textContent = isFinite(yds) ? yds : '—';
+      document.getElementById('holeRef').textContent = holeRef || '?';
+
+      // Front/Back via ray intersections (debug‑friendly)
+      let fb = null;
+      if (green) fb = frontBackViaRay(green, me);
+      const fbBox = document.getElementById('fb');
+      if (fb && isFinite(fb.Fyd) && isFinite(fb.Byd)) {
+        fbBox.style.display = 'inline';
+        document.getElementById('ydF').textContent = Math.round(fb.Fyd);
+        document.getElementById('ydB').textContent = Math.round(fb.Byd);
+      } else {
+        fbBox.style.display = 'none';
+      }
+
+      setLocStatus('Tracking…');
+
+      // Map projection marker + debug overlays
+      projIcon.setLatLng([snapped.geometry.coordinates[1], snapped.geometry.coordinates[0]]).addTo(map);
+      if (debugOn) {
+        debugGroup.clearLayers();
+        if (fb && fb.ray) {
+          const rayLatLngs = fb.ray.geometry.coordinates.map(([x,y])=>[y,x]);
+          L.polyline(rayLatLngs, { color:'#00e5ff', weight:2, opacity:0.8, dashArray:'6,4' }).addTo(debugGroup);
+        }
+        if (fb && fb.frontPt) L.circleMarker([fb.frontPt[1], fb.frontPt[0]], { radius:6, color:'#22c55e', weight:2, fillColor:'#22c55e', fillOpacity:0.8 }).addTo(debugGroup).bindTooltip('Front');
+        if (fb && fb.backPt)  L.circleMarker([fb.backPt[1],  fb.backPt[0]],  { radius:6, color:'#f97316', weight:2, fillColor:'#f97316', fillOpacity:0.8 }).addTo(debugGroup).bindTooltip('Back');
+      } else {
+        debugGroup.clearLayers();
+      }
+
+      // Push to BLE
+      if (bleChar && isFinite(yds)) sendBLE(holeRef, yds);
+    }
+
     function pickGreenForHole(hole) {
-      if (!course || !course.greens.length) return null;
-      // Use end of hole line as target; pick nearest green centroid to that end.
+      if (!course || !course.greens?.length) return null;
       const coords = hole.geometry.coordinates;
       const end = coords[coords.length - 1];
       const endPt = turf.point(end);
-      let best = null;
+      let best=null;
       for (const g of course.greens) {
         const c = turf.centroid(g);
         const d = turf.distance(c, endPt, { units:'meters' });
@@ -215,155 +327,17 @@ out body;`
       return best ? best.g : null;
     }
 
-    function computeYardage(lat, lon) {
-      const hole = nearestHoleFeature(lat, lon);
-      if (!hole) return null;
-      const coords = hole.geometry.coordinates;
-      const line = hole;
-      const lineStart = turf.point(coords[0]);
-      const lineEnd = turf.point(coords[coords.length-1]);
-      const me = turf.point([lon,lat]);
-      const snapped = turf.nearestPointOnLine(line, me);
-      const segToEnd = turf.lineSlice(snapped, lineEnd, line);
-      const metersLeft = turf.length(segToEnd, { units:'meters' });
-
-      const green = pickGreenForHole(hole);
-      let centerYd = metersLeft * 1.0936133; // fallback along centerline
-      let fcb = null;
-      if (green) {
-        const greenCentroid = turf.centroid(green);
-        const direct = turf.distance(snapped, greenCentroid, { units:'meters' }) * 1.0936133;
-        centerYd = direct; // prefer straight-line to green center
-        try {
-          const bbox = turf.bbox(green);
-          const corners = [ [bbox[0],bbox[1]], [bbox[2],bbox[1]], [bbox[2],bbox[3]], [bbox[0],bbox[3]] ].map(c=>turf.point(c));
-          let minAlong = Infinity, maxAlong = -Infinity;
-          const proj = p => {
-            const snappedP = turf.nearestPointOnLine(line, p);
-            const segFromStart = turf.lineSlice(lineStart, snappedP, line);
-            return turf.length(segFromStart, { units:'meters' });
-          };
-          for (const c of corners) {
-            const a = proj(c); if (a < minAlong) minAlong = a; if (a > maxAlong) maxAlong = a;
-          }
-          const myAlong = turf.length(turf.lineSlice(lineStart, turf.nearestPointOnLine(line, me), line), { units:'meters' });
-          const frontM = Math.max(0, minAlong - myAlong);
-          const backM  = Math.max(0, maxAlong - myAlong);
-          const centerM = Math.max(0, (minAlong + maxAlong)/2 - myAlong);
-          fcb = { F: (frontM * 1.0936133), C: (centerM * 1.0936133), B: (backM * 1.0936133) };
-        } catch {}
-      }
-      return { hole, snapped, centerYd, fcb };
-    }
-
-    // ===== BLE (Web Bluetooth) =====
-    // Requires user gesture; Chrome/Edge on Android/Desktop support this. iOS Safari does not.
-    let bleDevice = null, bleChar = null, lastBleSend = 0, lastSent = { y: -1, h: -1 };
-    function getUUIDs() {
-      return {
-        service: document.getElementById('svcUuid').value.trim(),
-        char: document.getElementById('chrUuid').value.trim(),
-        ascii: document.getElementById('asciiMode').checked
-      };
-    }
-
-    async function connectBLE() {
-      if (!navigator.bluetooth) { setStatus('Web Bluetooth not supported in this browser.'); return; }
-      const { service, char } = getUUIDs();
-      try {
-        setStatus('Requesting BLE device…');
-        bleDevice = await navigator.bluetooth.requestDevice({
-          filters: [{ services: [service] }],
-          optionalServices: [service]
-        });
-        bleDevice.addEventListener('gattserverdisconnected', () => {
-          document.getElementById('bleState').textContent = 'BLE: DISC';
-          bleChar = null;
-        });
-        const server = await bleDevice.gatt.connect();
-        const svc = await server.getPrimaryService(service);
-        bleChar = await svc.getCharacteristic(char);
-        document.getElementById('bleState').textContent = 'BLE: ON';
-        setStatus('BLE connected.');
-      } catch (e) {
-        setStatus('BLE error: ' + e.message);
-      }
-    }
-    document.getElementById('bleBtn').onclick = () => { connectBLE(); };
-
-    async function sendBLE(holeNum, yards, hasFcb) {
-      if (!bleChar) return;
-      const now = Date.now();
-      if ((now - lastBleSend) < 900) return; // ~1 Hz
-      if (yards === lastSent.y && holeNum === lastSent.h) return;
-      const { ascii } = getUUIDs();
-      try {
-        if (ascii) {
-          const line = `H${holeNum||0} ${Math.max(0, Math.min(9999, Math.round(yards)))}\n`;
-          await bleChar.writeValue(new TextEncoder().encode(line));
-        } else {
-          const buf = new ArrayBuffer(4);
-          const dv = new DataView(buf);
-          const y = Math.max(0, Math.min(65535, Math.round(yards)));
-          dv.setUint16(0, y, true);
-          dv.setUint8(2, Math.max(0, Math.min(255, holeNum||0)));
-          dv.setUint8(3, hasFcb ? 1 : 0);
-          if (bleChar.writeValueWithoutResponse) {
-            await bleChar.writeValueWithoutResponse(buf);
-          } else {
-            await bleChar.writeValue(buf);
-          }
-        }
-        lastBleSend = now; lastSent = { y: Math.round(yards), h: holeNum||0 };
-      } catch (e) {
-        setStatus('BLE write failed: ' + e.message);
-      }
-    }
-    document.getElementById('pingBtn').onclick = () => { sendBLE(99, 321, false); };
-
-    // ===== Update loop =====
-    function updateYardage() {
-      if (!lastPos || !course) return;
-      const { latitude:lat, longitude:lon } = lastPos.coords;
-      const result = computeYardage(lat, lon);
-      if (!result) { setStatus('No hole geometry nearby.'); return; }
-      const { hole, snapped, centerYd, fcb } = result;
-
-      const yds = Math.round(centerYd);
-      document.getElementById('ydCenter').textContent = isFinite(yds) ? yds : '—';
-      const holeRef = parseInt(hole.properties.ref || '0') || 0;
-      document.getElementById('holeRef').textContent = (holeRef || '?');
-      document.getElementById('fcb').style.display = fcb ? 'inline' : 'none';
-      if (fcb) {
-        document.getElementById('ydF').textContent = Math.round(fcb.F);
-        document.getElementById('ydC').textContent = Math.round(fcb.C);
-        document.getElementById('ydB').textContent = Math.round(fcb.B);
-      }
-      setLocStatus('Tracking…');
-
-      const p = [snapped.geometry.coordinates[1], snapped.geometry.coordinates[0]];
-      projIcon.setLatLng(p).addTo(map);
-
-      if (bleChar && isFinite(yds)) sendBLE(holeRef, yds, !!fcb);
-    }
-
     // Tap-to-set position fallback (for testing without GPS/HTTPS)
-    map.on('click', (e) => {
-      const fake = { coords: { latitude:e.latlng.lat, longitude:e.latlng.lng, accuracy:5, speed:0 } };
-      onPos(fake);
-    });
+    map.on('click', (e) => onPos({ coords: { latitude:e.latlng.lat, longitude:e.latlng.lng, accuracy:5, speed:0 } }));
 
     // Init
     map.setView([40.0,-100.0], 3);
     startGPS();
 
-    // Auto runner: once we have GPS, auto-load course; then tick yardage
-    let autoLoaded = false;
+    // Auto: after GPS, load course once; then update at ~1.2 Hz
+    let autoLoaded=false;
     setInterval(()=>{
-      if (!autoLoaded && lastPos && !course) {
-        autoLoaded = true;
-        loadCourseAround(lastPos.coords.latitude, lastPos.coords.longitude).catch(err=>setStatus(err.message||String(err)));
-      }
+      if (!autoLoaded && lastPos && !course) { autoLoaded = true; loadCourseAround(lastPos.coords.latitude, lastPos.coords.longitude).catch(e=>setStatus(e.message||String(e))); }
       if (course && lastPos) updateYardage();
     }, 1200);
   </script>
