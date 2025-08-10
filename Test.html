@@ -7,12 +7,13 @@
   <link rel="preconnect" href="https://unpkg.com">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
-    :root { --headerH: 140px; }
+    :root { --headerH: 160px; }
     html, body { height:100%; margin:0; background:#0b0f14; color:#e9eef3; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
     #map { position:absolute; top:var(--headerH); left:0; right:0; bottom:0; }
     header { position:fixed; top:0; left:0; right:0; display:flex; flex-wrap:wrap; gap:8px 10px; padding:8px 12px; background:#111823; border-bottom:1px solid #1f2937; z-index:1000; }
     header .btn { background:#1f2937; color:#e9eef3; border:1px solid #2b3b50; padding:8px 10px; border-radius:10px; font-weight:700; font-size:14px; }
     header input, header select { background:#0e1520; color:#e9eef3; border:1px solid #233044; border-radius:8px; padding:6px 8px; }
+    header input[type="number"]{ width:90px; }
     header select { min-width: 180px; }
     .row { display:flex; gap:10px; align-items:center; width:100%; }
     .row small { opacity:.8; }
@@ -27,6 +28,7 @@
       header .btn { padding:6px 8px; font-size:12px; }
       header input { width: 160px; }
       header select { min-width: 150px; }
+      header input[type="number"]{ width:80px; }
     }
   </style>
 </head>
@@ -35,7 +37,7 @@
     <div class="row">
       <button id="locBtn" class="btn">Locate</button>
       <button id="followBtn" class="btn">Follow: ON</button>
-      <button id="debugBtn" class="btn">Debug: OFF</button>
+      <button id="debugBtn" class="btn">Overlay: OFF</button>
 
       <select id="methodSelect" title="F/C/B method">
         <option value="ray">Ray via centroid</option>
@@ -53,14 +55,28 @@
 
       <button id="bleBtn" class="btn">Connect BLE</button>
       <button id="pingBtn" class="btn">Send Test</button>
+      <button id="debugToggle" class="btn">Screen Debug: OFF</button>
       <small id="bleState">BLE: OFF</small>
       <small id="status" style="margin-left:auto;">Ready</small>
     </div>
+
     <div class="row">
-      <label>Service:&nbsp;<input id="svcUuid" value="0000f00d-0000-1000-8000-00805f9b34fb"></label>
-      <label>Char:&nbsp;<input id="chrUuid" value="0000f00e-0000-1000-8000-00805f9b34fb"></label>
+      <label>Svc:<input id="svcUuid" value="0000f00d-0000-1000-8000-00805f9b34fb"></label>
+      <label>Yard:<input id="chrUuid" value="0000f00e-0000-1000-8000-00805f9b34fb"></label>
+      <label>Ctrl:<input id="ctrlUuid" value="0000f00f-0000-1000-8000-00805f9b34fb"></label>
       <label><input type="checkbox" id="asciiMode"> ASCII</label>
-      <small>(Center = distance to green centroid. F/B per selected method. Auto-loading enabled.)</small>
+      <small>(F/C/B uses centroid + chosen method. Auto-load enabled.)</small>
+    </div>
+
+    <div class="row">
+      <div id="bleStatus" class="pill">BLE status: Not connected</div>
+      <div class="pill" id="viewLockPill" style="display:none;">View locked</div>
+      <div class="pill" title="X=stale timeout Y=min redraw Z=threshold">
+        X <input type="number" id="cfgX" value="15000" style="width:80px">
+        Y <input type="number" id="cfgY" value="1200" style="width:80px">
+        Z <input type="number" id="cfgZ" value="2" style="width:60px">
+        <button id="sendCfgBtn" class="btn" style="padding:4px 8px">Send CFG</button>
+      </div>
     </div>
   </header>
 
@@ -84,15 +100,15 @@
     <div><span style="display:inline-block;width:10px;height:10px;background:#10b981;border-radius:2px;margin-right:6px"></span> Green</div>
     <div><span style="display:inline-block;width:10px;height:10px;background:#f59e0b;border-radius:2px;margin-right:6px"></span> Tee</div>
     <div><span style="display:inline-block;width:10px;height:10px;background:#ef4444;border-radius:2px;margin-right:6px"></span> You</div>
-    <div><span style="display:inline-block;width:10px;height:10px;background:#22c55e;border-radius:2px;margin-right:6px"></span> Front point</div>
-    <div><span style="display:inline-block;width:10px;height:10px;background:#3b82f6;border-radius:2px;margin-right:6px"></span> Center (centroid)</div>
-    <div><span style="display:inline-block;width:10px;height:10px;background:#f97316;border-radius:2px;margin-right:6px"></span> Back point</div>
+    <div><span style="display:inline-block;width:10px;height:10px;background:#22c55e;border-radius:2px;margin-right:6px"></span> Front</div>
+    <div><span style="display:inline-block;width:10px;height:10px;background:#3b82f6;border-radius:2px;margin-right:6px"></span> Center</div>
+    <div><span style="display:inline-block;width:10px;height:10px;background:#f97316;border-radius:2px;margin-right:6px"></span> Back</div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
   <script>
-    // --- dynamic layout so the map always sits under the header ---
+    // --- layout so map sits under header ---
     const hdr = document.getElementById('hdr');
     const layout = () => document.documentElement.style.setProperty('--headerH', hdr.offsetHeight + 'px');
     new ResizeObserver(layout).observe(hdr); window.addEventListener('load', layout);
@@ -110,25 +126,39 @@
     const teesLayer = L.geoJSON(null, { style: { color:'#f59e0b', weight:2, fillOpacity:0.1, fillColor:'#f59e0b' } }).addTo(map);
     const debugGroup = L.layerGroup().addTo(map);
 
-    let debugOn = false;
+    let debugOverlayOn = false;
     const debugBtn = document.getElementById('debugBtn');
     debugBtn.onclick = () => {
-      debugOn = !debugOn;
-      debugBtn.textContent = 'Debug: ' + (debugOn ? 'ON' : 'OFF');
-      if (!debugOn) debugGroup.clearLayers();
+      debugOverlayOn = !debugOverlayOn;
+      debugBtn.textContent = 'Overlay: ' + (debugOverlayOn ? 'ON' : 'OFF');
+      if (!debugOverlayOn) debugGroup.clearLayers();
     };
 
+    // ===== View lock / Follow =====
     let follow = true;
+    let lockViewport = false; // when true, never auto-move the map
+    const viewLockPill = document.getElementById('viewLockPill');
+
     document.getElementById('followBtn').onclick = () => {
       follow = !follow;
-      document.getElementById('followBtn').textContent = `Follow: ${follow? 'ON' : 'OFF'}`;
+      document.getElementById('followBtn').textContent = `Follow: ${follow ? 'ON' : 'OFF'}`;
+      lockViewport = !follow;
+      viewLockPill.style.display = lockViewport ? 'inline-block' : 'none';
     };
+
     document.getElementById('locBtn').onclick = () => {
       if (lastPos) map.setView([lastPos.coords.latitude, lastPos.coords.longitude], 16, { animate:true });
     };
 
     function setStatus(msg) { document.getElementById('status').textContent = msg; }
     function setLocStatus(msg) { document.getElementById('locStatus').textContent = msg; }
+    const bleStatus = document.getElementById('bleStatus');
+    function setBleStatus(text, ok=null) {
+      bleStatus.textContent = text;
+      if (ok === true) { bleStatus.style.background = '#0f5132'; bleStatus.style.color = '#d1fae5'; }
+      else if (ok === false) { bleStatus.style.background = '#5c2c2c'; bleStatus.style.color = '#fee2e2'; }
+      else { bleStatus.style.background = ''; bleStatus.style.color = ''; }
+    }
 
     // ===== GPS =====
     let lastPos = null;
@@ -137,14 +167,22 @@
       navigator.geolocation.watchPosition(onPos, onPosErr, { enableHighAccuracy:true, maximumAge:1000, timeout:10000 });
     }
     function onPos(pos) {
+      // Ignore very poor updates when view is locked (typical on laptops without GPS)
+      if (!follow && pos.coords.accuracy && pos.coords.accuracy > 1000) {
+        document.getElementById('gpsAcc').textContent = pos.coords.accuracy.toFixed(0) + ' m';
+        return;
+      }
       lastPos = pos;
       const {latitude:lat, longitude:lon, accuracy:acc, speed} = pos.coords;
       document.getElementById('gpsAcc').textContent = (acc||0).toFixed(0) + ' m';
       document.getElementById('speed').textContent = ((speed||0)).toFixed(1) + ' m/s';
       youIcon.setLatLng([lat,lon]).addTo(map);
-      if (follow) map.setView([lat,lon], Math.max(map.getZoom(), 16), { animate:true });
+
+      if (follow && !lockViewport) {
+        map.setView([lat,lon], Math.max(map.getZoom(), 16), { animate:true });
+      }
+
       updateYardage();
-      // kick auto-fetcher
       maybeFetchCourse(lat, lon);
     }
     function onPosErr(err) { setLocStatus('Location error: ' + err.message + ' (use HTTPS)'); }
@@ -197,17 +235,17 @@ out body;`
       if (!holes.length && !greens.length) { setStatus('No golf features nearby'); return; }
       course = { holes, greens, tees };
       const all = L.featureGroup([holesLayer, greensLayer, teesLayer]);
-      try { map.fitBounds(all.getBounds(), { padding:[20,20] }); } catch {}
+      try {
+        if (!lockViewport) map.fitBounds(all.getBounds(), { padding:[20,20] });
+      } catch {}
       setStatus('Course loaded.');
       updateYardage();
     }
 
     // ===== Auto-loader (movement/time/cooldown) =====
-    const FETCH_RADIUS_M = 1500;
-    const REQUERY_MOVE_M = 400;           // re-fetch if moved > 400 m from last fetch center
-    const REQUERY_MAX_AGE_MS = 12*60*1000; // or if older than 12 min
-    const FETCH_COOLDOWN_MS = 45*1000;     // never more often than every 45 s
-
+    const REQUERY_MOVE_M = 400;
+    const REQUERY_MAX_AGE_MS = 12*60*1000;
+    const FETCH_COOLDOWN_MS = 45*1000;
     let lastFetchCenter = null;  // [lat, lon]
     let lastFetchAt = 0;
     let fetching = false;
@@ -230,14 +268,12 @@ out body;`
       const since = Date.now() - lastFetchAt;
       if (since < FETCH_COOLDOWN_MS) return;
       if (!needFetch(lat, lon)) return;
-
       fetching = true;
       try {
         await loadCourseAround(lat, lon);
         lastFetchCenter = [lat, lon];
         lastFetchAt = Date.now();
       } catch (e) {
-        // Light backoff: push 'lastFetchAt' backwards so next attempt isn't immediate
         lastFetchAt = Date.now() - (FETCH_COOLDOWN_MS / 2);
         setStatus('Fetch failed; will retry later.');
       } finally {
@@ -245,7 +281,7 @@ out body;`
       }
     }
 
-    // ===== F/C/B methods =====
+    // ===== Hole/green + F/C/B methods =====
     function nearestHoleFeature(lat, lon) {
       if (!course || !course.holes.length) return null;
       const p = turf.point([lon, lat]);
@@ -255,6 +291,18 @@ out body;`
         if (!best || d < best.d) best = { f, d };
       }
       return best ? best.f : null;
+    }
+    function pickGreenForHole(hole) {
+      if (!course || !course.greens?.length) return null;
+      const end = hole.geometry.coordinates.at(-1);
+      const endPt = turf.point(end);
+      let best=null;
+      for (const g of course.greens) {
+        const c = turf.centroid(g);
+        const d = turf.distance(c, endPt, { units:'meters' });
+        if (!best || d < best.d) best = { g, d };
+      }
+      return best ? best.g : null;
     }
 
     function calcFCB_ray(green, mePoint) {
@@ -299,57 +347,98 @@ out body;`
       } catch { return null; }
     }
 
-    function pickGreenForHole(hole) {
-      if (!course || !course.greens?.length) return null;
-      const coords = hole.geometry.coordinates;
-      const end = coords[coords.length - 1];
-      const endPt = turf.point(end);
-      let best=null;
-      for (const g of course.greens) {
-        const c = turf.centroid(g);
-        const d = turf.distance(c, endPt, { units:'meters' });
-        if (!best || d < best.d) best = { g, d };
-      }
-      return best ? best.g : null;
-    }
+    // ===== BLE (yardage + control) =====
+    let bleDevice=null, bleChar=null, controlChar=null, lastBleSend=0, lastSent={y:-1,h:-1};
+    function getUUIDs(){ return { service: svcUuid.value.trim(), char: chrUuid.value.trim(), ctrl: ctrlUuid.value.trim(), ascii: asciiMode.checked }; }
 
-    // ===== BLE =====
-    let bleDevice=null, bleChar=null, lastBleSend=0, lastSent={y:-1,h:-1};
-    function getUUIDs(){ return { service: svcUuid.value.trim(), char: chrUuid.value.trim(), ascii: asciiMode.checked }; }
     async function connectBLE() {
       if (!navigator.bluetooth) { setStatus('Web Bluetooth not supported'); return; }
-      const { service, char } = getUUIDs();
+      const { service, char, ctrl } = getUUIDs();
       try {
         setStatus('Requesting BLE device…');
         bleDevice = await navigator.bluetooth.requestDevice({ filters:[{ services:[service] }], optionalServices:[service] });
-        bleDevice.addEventListener('gattserverdisconnected', ()=>{ bleState.textContent='BLE: DISC'; bleChar=null; });
+        bleDevice.addEventListener('gattserverdisconnected', ()=>{ bleState.textContent='BLE: DISC'; bleChar=null; controlChar=null; setBleStatus('BLE: Disconnected'); });
         const server = await bleDevice.gatt.connect();
         const svc = await server.getPrimaryService(service);
         bleChar = await svc.getCharacteristic(char);
-        bleState.textContent='BLE: ON'; setStatus('BLE connected.');
-      } catch(e){ setStatus('BLE error: '+e.message); }
+        try { controlChar = await svc.getCharacteristic(ctrl); } catch { controlChar = null; }
+        bleState.textContent='BLE: ON'; setStatus('BLE connected.'); setBleStatus('BLE: Connected', true);
+
+        // notifications for yardage (optional)
+        try {
+          await bleChar.startNotifications();
+          bleChar.addEventListener('characteristicvaluechanged', (e) => {
+            const s = new TextDecoder().decode(e.target.value).trim();
+            console.log('notify:', s);
+            setBleStatus('Notify: ' + s, true);
+          });
+        } catch {}
+      } catch(e){ setStatus('BLE error: '+e.message); setBleStatus('BLE error: ' + e.message, false); }
     }
     document.getElementById('bleBtn').onclick = connectBLE;
-    async function sendBLE(holeNum, yards) {
+
+    document.getElementById('debugToggle').onclick = async () => {
+      if (!controlChar) { setStatus('No control characteristic'); return; }
+      const btn = document.getElementById('debugToggle');
+      const turnOn = btn.textContent.includes('OFF');
+      const cmd = turnOn ? 'DEBUG=1' : 'DEBUG=0';
+      await controlChar.writeValue(new TextEncoder().encode(cmd));
+      btn.textContent = 'Screen Debug: ' + (turnOn ? 'ON' : 'OFF');
+      setStatus('Sent control: ' + cmd);
+    };
+
+    document.getElementById('sendCfgBtn').onclick = async () => {
+      if (!controlChar) { setStatus('No control characteristic'); return; }
+      const X = parseInt(document.getElementById('cfgX').value, 10) || 15000;
+      const Y = parseInt(document.getElementById('cfgY').value, 10) || 1200;
+      const Z = parseInt(document.getElementById('cfgZ').value, 10) || 2;
+      const cmd = `CFG X=${X} Y=${Y} Z=${Z}`;
+      await controlChar.writeValue(new TextEncoder().encode(cmd));
+      setStatus('Sent control: ' + cmd);
+    };
+
+    async function sendBLE(holeNum, yards, f=null, b=null) {
       if (!bleChar) return;
       const now = Date.now();
       if (now - lastBleSend < 900) return;
-      if (yards === lastSent.y && holeNum === lastSent.h) return;
+      if (yards === lastSent.y && holeNum === lastSent.h && f==null && b==null) return;
+
       const { ascii } = getUUIDs();
+      const rawY = Math.max(0, Math.min(65535, Math.round(yards)));
+      const rawH = Math.max(0, Math.min(255, holeNum||0));
       try{
         if (ascii) {
-          const s = `H${holeNum||0} ${Math.max(0,Math.min(9999,Math.round(yards)))}\n`;
-          await bleChar.writeValue(new TextEncoder().encode(s));
+          let msg = `H${rawH} ${rawY}`;
+          if (Number.isFinite(f) && Number.isFinite(b)) msg += ` F${Math.round(f)} B${Math.round(b)}`;
+          await bleChar.writeValue(new TextEncoder().encode(msg));
+          await new Promise(r=>setTimeout(r, 200));
+          const val = await bleChar.readValue().catch(()=>null);
+          let echoed = val ? new TextDecoder().decode(val).trim() : '';
+          const ok = (echoed === msg);
+          setBleStatus(ok ? '✅ Device updated' : `❌ Mismatch (${echoed||'no read'})`, ok);
         } else {
-          const buf=new ArrayBuffer(4), dv=new DataView(buf);
-          const y = Math.max(0, Math.min(65535, Math.round(yards)));
-          dv.setUint16(0, y, true); dv.setUint8(2, Math.max(0,Math.min(255,holeNum||0))); dv.setUint8(3, 0);
-          if (bleChar.writeValueWithoutResponse) await bleChar.writeValueWithoutResponse(buf); else await bleChar.writeValue(buf);
+          if (Number.isFinite(f) && Number.isFinite(b)) {
+            const buf=new ArrayBuffer(8), dv=new DataView(buf);
+            dv.setUint16(0, rawY, true); dv.setUint8(2, rawH); dv.setUint8(3, 1); // flags bit0=hasFB
+            dv.setUint16(4, Math.max(0,Math.min(65535,Math.round(f))), true);
+            dv.setUint16(6, Math.max(0,Math.min(65535,Math.round(b))), true);
+            if (bleChar.writeValueWithoutResponse) await bleChar.writeValueWithoutResponse(buf); else await bleChar.writeValue(buf);
+          } else {
+            const buf=new ArrayBuffer(4), dv=new DataView(buf);
+            dv.setUint16(0, rawY, true); dv.setUint8(2, rawH); dv.setUint8(3, 0);
+            if (bleChar.writeValueWithoutResponse) await bleChar.writeValueWithoutResponse(buf); else await bleChar.writeValue(buf);
+          }
+          await new Promise(r=>setTimeout(r, 200));
+          const val = await bleChar.readValue().catch(()=>null);
+          const echoed = val ? new TextDecoder().decode(val).trim() : '';
+          const expected = Number.isFinite(f) && Number.isFinite(b) ? `H${rawH} ${rawY} F${Math.round(f)} B${Math.round(b)}` : `H${rawH} ${rawY}`;
+          const ok = echoed === expected;
+          setBleStatus(ok ? '✅ Device updated' : `❌ Mismatch (${echoed||'no read'})`, ok);
         }
         lastBleSend = now; lastSent = { y: Math.round(yards), h: holeNum||0 };
-      }catch(e){ setStatus('BLE write failed: '+e.message); }
+      }catch(e){ setStatus('BLE write failed: '+e.message); setBleStatus('BLE write failed: ' + e.message, false); }
     }
-    document.getElementById('pingBtn').onclick = ()=> sendBLE(99,321);
+    document.getElementById('pingBtn').onclick = ()=> sendBLE(99,321, 311, 345);
 
     // ===== Update loop =====
     function updateYardage() {
@@ -382,9 +471,10 @@ out body;`
         document.getElementById('ydCenter').textContent = yds;
         document.getElementById('ydC').textContent = yds;
         document.getElementById('trioRow').style.display = 'block';
-        if (isFinite(FCB.Fyd)) document.getElementById('ydF').textContent = Math.round(FCB.Fyd);
-        if (isFinite(FCB.Byd)) document.getElementById('ydB').textContent = Math.round(FCB.Byd);
-        if (bleChar) sendBLE(holeRef, yds); // send center
+        let f=null,b=null;
+        if (isFinite(FCB.Fyd)) { const v=Math.round(FCB.Fyd); document.getElementById('ydF').textContent = v; f=v; }
+        if (isFinite(FCB.Byd)) { const v=Math.round(FCB.Byd); document.getElementById('ydB').textContent = v; b=v; }
+        if (bleChar) sendBLE(holeRef, yds, f, b); // send center + optional FB
       } else {
         document.getElementById('ydCenter').textContent = '—';
         document.getElementById('trioRow').style.display = 'none';
@@ -393,7 +483,7 @@ out body;`
 
       // Debug overlay
       debugGroup.clearLayers();
-      if (debugOn && FCB) {
+      if (debugOverlayOn && FCB) {
         const meLL = [lat, lon];
         if (FCB.Fpt) {
           L.polyline([meLL, [FCB.Fpt[1], FCB.Fpt[0]]], { color:'#22c55e', weight:2 }).addTo(debugGroup);
@@ -412,7 +502,7 @@ out body;`
         }
       }
 
-      // Projected point on hole centerline (just a helper marker)
+      // Projected point on hole centerline (helper marker)
       const snapped = turf.nearestPointOnLine(hole, me);
       projIcon.setLatLng([snapped.geometry.coordinates[1], snapped.geometry.coordinates[0]]).addTo(map);
     }
@@ -425,7 +515,6 @@ out body;`
       const lat = parseFloat(latS), lon = parseFloat(lonS), zoom = parseInt(zoomS||'16',10);
       map.flyTo([lat, lon], zoom, { animate:true });
       onPos({ coords: { latitude: lat, longitude: lon, accuracy: 5, speed: 0 } });
-      // force a fetch at this location
       lastFetchCenter = null;
       maybeFetchCourse(lat, lon);
     };
@@ -441,13 +530,11 @@ out body;`
     map.setView([40.0,-100.0], 3);
     startGPS();
 
-    // UI tick: yardage render; also re-check fetch conditions
     setInterval(()=>{
       if (course && lastPos) updateYardage();
       if (lastPos) maybeFetchCourse(lastPos.coords.latitude, lastPos.coords.longitude);
     }, 1200);
 
-    // keep map under header as header wraps on mobile
     layout();
   </script>
 </body>
