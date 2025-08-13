@@ -415,7 +415,7 @@ out body;`
 
     let bleDevice=null, yardageChar=null, controlChar=null, imageChar=null;
     let bleChar=null, lastBleSend=0, lastSent={y:-1,h:-1};
-    let lastHoleRefSent = null; // NEW: track last hole sent
+    let lastHoleRefSent = null; // track last hole sent
 
     function isBleConnected() { return !!(bleDevice?.gatt?.connected); }
     function setBleUiConnected(connected) {
@@ -530,39 +530,120 @@ out body;`
     document.getElementById('pingBtn').onclick = ()=> sendBLE(99,321, 311, 345);
 
     // ===== Slow lane: rasterize + send over IMAGE char (ASCII meta + binary) =====
+
     function pack1bppMSB(imageData, width, height) {
-      const bytesPerRow = (width + 7) >> 3; const out = new Uint8Array(bytesPerRow * height); const data = imageData.data; let di = 0;
-      for (let y = 0; y < height; y++) { for (let xByte = 0; xByte < bytesPerRow; xByte++) { let b = 0;
-        for (let bit = 0; bit < 8; bit++) { const x = (xByte << 3) + bit;
-          if (x < width) { const idx = (y * width + x) << 2; const lum = data[idx]*0.2126 + data[idx+1]*0.7152 + data[idx+2]*0.0722; const on = lum < 128; b |= (on ? (1 << (7 - bit)) : 0); }
-        } out[di++] = b; } }
+      const bytesPerRow = (width + 7) >> 3;
+      const out = new Uint8Array(bytesPerRow * height);
+      const data = imageData.data;
+      let di = 0;
+      for (let y = 0; y < height; y++) {
+        for (let xByte = 0; xByte < bytesPerRow; xByte++) {
+          let b = 0;
+          for (let bit = 0; bit < 8; bit++) {
+            const x = (xByte << 3) + bit;
+            if (x < width) {
+              const idx = (y * width + x) << 2;
+              const lum = data[idx]*0.2126 + data[idx+1]*0.7152 + data[idx+2]*0.0722;
+              const on = lum < 128;
+              b |= (on ? (1 << (7 - bit)) : 0);
+            }
+          }
+          out[di++] = b;
+        }
+      }
       return out;
     }
-    function polygonToCanvas(green, canvas, targetW, targetH, invert=false) {
-      const ctx = canvas.getContext('2d'); canvas.width = targetW; canvas.height = targetH;
-      ctx.fillStyle = invert ? '#000' : '#fff'; ctx.fillRect(0,0,targetW,targetH);
-      ctx.strokeStyle = invert ? '#fff' : '#000'; ctx.fillStyle = invert ? '#fff' : '#000';
+
+    // NEW: draw with rotation so the hole centerline enters from the bottom
+    function polygonToCanvas(green, hole, canvas, targetW, targetH, invert=false) {
+      const ctx = canvas.getContext('2d');
+      canvas.width = targetW; canvas.height = targetH;
+
+      // Background/ink colors
+      ctx.fillStyle = invert ? '#000' : '#fff';
+      ctx.fillRect(0,0,targetW,targetH);
+      ctx.strokeStyle = invert ? '#000' : '#000';
+      ctx.fillStyle = invert ? '#000' : '#000';
       ctx.lineWidth = Math.max(1, Math.floor(Math.min(targetW, targetH) / 14));
-      if (!green) { ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(targetW,targetH); ctx.moveTo(targetW,0); ctx.lineTo(0,targetH); ctx.stroke(); return; }
-      const ring = green.geometry.coordinates[0] || green.geometry.coordinates; if (!ring?.length) return;
+
+      if (!green) {
+        // simple X if no green
+        ctx.strokeStyle = invert ? '#fff' : '#000';
+        ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(targetW,targetH); ctx.moveTo(targetW,0); ctx.lineTo(0,targetH); ctx.stroke();
+        return;
+      }
+
+      // Extract ring (lon,lat)
+      const ring = green.geometry.coordinates[0] || green.geometry.coordinates;
+      if (!ring || !ring.length) return;
+
+      // Find center (lon/lat) of the green
       let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
       for (const [lon,lat] of ring) { if (lon<minX)minX=lon; if (lat<minY)minY=lat; if (lon>maxX)maxX=lon; if (lat>maxY)maxY=lat; }
-      const w = maxX - minX, h = maxY - minY; const scale = 0.90 * Math.min(targetW / (w || 1), targetH / (h || 1));
-      const centerX = (minX + maxX)/2, centerY = (minY + maxY)/2; const offX = targetW/2, offY = targetH/2;
-      const toPx = ([lon,lat]) => [(lon - centerX) * scale + offX, (centerY - lat) * scale + offY];
-      ctx.beginPath(); ring.forEach((pt, i) => { const [x,y] = toPx(pt); if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); });
-      ctx.closePath(); ctx.fill(); ctx.stroke();
+      const centerX = (minX + maxX)/2, centerY = (minY + maxY)/2;
+
+      // Determine approach bearing from the hole's last segment (second-last -> last)
+      let bearingDeg = 0;
+      if (hole && hole.geometry && hole.geometry.coordinates && hole.geometry.coordinates.length >= 2) {
+        const hc = hole.geometry.coordinates;
+        const p1 = turf.point(hc[hc.length - 2]);
+        const p2 = turf.point(hc[hc.length - 1]);
+        // Turf bearing: degrees, -180..180, 0 = north, 90 = east (clockwise from north)
+        bearingDeg = turf.bearing(p1, p2);
+      }
+      // We rotate CCW by bearingDeg so the approach vector points "up" (y+ in math),
+      // which after converting to canvas (y down) means it enters from the BOTTOM.
+      const phi = bearingDeg * Math.PI / 180;
+
+      // Build unscaled, rotated points in a local XY with y-up
+      const local = [];
+      for (const [lon, lat] of ring) {
+        const dx = (lon - centerX);
+        const dy = (lat - centerY); // y-up
+        const rx =  dx * Math.cos(phi) - dy * Math.sin(phi);
+        const ry =  dx * Math.sin(phi) + dy * Math.cos(phi);
+        local.push([rx, ry]);
+      }
+
+      // Compute scale from rotated bounds (fit to 90% box)
+      let rMinX=Infinity, rMinY=Infinity, rMaxX=-Infinity, rMaxY=-Infinity;
+      for (const [x,y] of local) { if (x<rMinX) rMinX=x; if (y<rMinY) rMinY=y; if (x>rMaxX) rMaxX=x; if (y>rMaxY) rMaxY=y; }
+      const rw = rMaxX - rMinX || 1, rh = rMaxY - rMinY || 1;
+      const scale = 0.90 * Math.min(targetW / rw, targetH / rh);
+      const offX = targetW/2, offY = targetH/2;
+
+      // Draw filled polygon (canvas y-down => invert y)
+      ctx.fillStyle = invert ? '#fff' : '#000';
+      ctx.strokeStyle = invert ? '#fff' : '#000';
+      ctx.beginPath();
+      local.forEach(([x,y], i) => {
+        const X = offX + x * scale;
+        const Y = offY - y * scale;
+        if (i === 0) ctx.moveTo(X, Y); else ctx.lineTo(X, Y);
+      });
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
     }
+
     function buildGHIMBuffer(w, h, x, y, flags, bytes) {
-      const headerLen = 4 + 2 + 2 + 2 + 2 + 1; const buf = new ArrayBuffer(headerLen + bytes.length); const dv = new DataView(buf); let o = 0;
+      const headerLen = 4 + 2 + 2 + 2 + 2 + 1;
+      const buf = new ArrayBuffer(headerLen + bytes.length);
+      const dv = new DataView(buf);
+      let o = 0;
       dv.setUint8(o++, 71); dv.setUint8(o++, 72); dv.setUint8(o++, 73); dv.setUint8(o++, 77); // "GHIM"
-      dv.setUint16(o, w, true); o+=2; dv.setUint16(o, h, true); o+=2; dv.setInt16(o, x, true); o+=2; dv.setInt16(o, y, true); o+=2; dv.setUint8(o++, flags & 0xFF);
-      new Uint8Array(buf, headerLen).set(bytes); return new Uint8Array(buf);
+      dv.setUint16(o, w, true); o+=2;
+      dv.setUint16(o, h, true); o+=2;
+      dv.setInt16(o, x, true);  o+=2;
+      dv.setInt16(o, y, true);  o+=2;
+      dv.setUint8(o++, flags & 0xFF);
+      new Uint8Array(buf, headerLen).set(bytes);
+      return new Uint8Array(buf);
     }
     function chunkUint8(u8, size) { const out=[]; for (let i=0;i<u8.length;i+=size) out.push(u8.subarray(i,i+size)); return out; }
 
     let lastGHIM = null;
-    function updateImagePreview(green) {
+    function updateImagePreview(green, hole) {
       const w = Math.max(16, parseInt(document.getElementById('imgW').value, 10) || 70);
       const h = Math.max(16, parseInt(document.getElementById('imgH').value, 10) || 70);
       const x = parseInt(document.getElementById('imgX').value, 10) || 0;
@@ -571,7 +652,7 @@ out body;`
       const full = document.getElementById('imgFull').checked;
 
       const canvas = document.getElementById('greenCanvas');
-      polygonToCanvas(green, canvas, w, h, inv);
+      polygonToCanvas(green, hole, canvas, w, h, inv);
       const ctx = canvas.getContext('2d'); const img = ctx.getImageData(0,0,w,h);
       let bytes = pack1bppMSB(img, w, h); if (inv) { for (let i=0;i<bytes.length;i++) bytes[i] = ~bytes[i]; }
       const flags = (inv ? 0x01 : 0x00) | (full ? 0x02 : 0x00); lastGHIM = buildGHIMBuffer(w, h, x, y, flags, bytes);
@@ -602,7 +683,9 @@ out body;`
     document.getElementById('genImgBtn').onclick = () => {
       if (!course) { setStatus('No course loaded yet'); return; }
       let lat, lon; if (lastPos) { lat = lastPos.coords.latitude; lon = lastPos.coords.longitude; } else { const c = map.getCenter(); lat = c.lat; lon = c.lng; }
-      const hole = nearestHoleFeature(lat, lon); const green = hole ? pickGreenForHole(hole) : null; updateImagePreview(green);
+      const hole = nearestHoleFeature(lat, lon);
+      const green = hole ? pickGreenForHole(hole) : null;
+      updateImagePreview(green, hole);
     };
     document.getElementById('flyBtn').onclick = () => {
       const sel = document.getElementById('courseSelect').value; if (!sel) return;
@@ -656,10 +739,10 @@ out body;`
         projIcon.setLatLng([snapped.geometry.coordinates[1], snapped.geometry.coordinates[0]]).addTo(map);
       }
 
-      // Auto-preview + auto-send green when hole changes
+      // Auto-preview + auto-send green when hole changes (with rotation)
       const auto = document.getElementById('autoOnHole').checked;
       const newHole = String(holeRef);
-      if (auto && newHole !== lastHoleRefShown) { updateImagePreview(green); lastHoleRefShown = newHole; }
+      if (auto && newHole !== lastHoleRefShown) { updateImagePreview(green, hole); lastHoleRefShown = newHole; }
     }
 
     // Init
