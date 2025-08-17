@@ -5,7 +5,12 @@
 #include <Adafruit_GFX.h>
 #include <U8g2_for_Adafruit_GFX.h>
 #include <Fonts/FreeSansBold12pt7b.h>
-#include <vector>   // for rxImageBuf
+#include <vector>
+
+// ===== Compile-time grid overlay (debug) =====
+#ifndef SHOW_GRID
+#define SHOW_GRID 1
+#endif
 
 // ------------------ Waveshare ESP32 e-Paper Driver Board (Rev3) pins ------------------
 #define EPD_CS   15
@@ -18,25 +23,22 @@
 
 // ------------------ Panel selection: 2.9" (D) UC8151D ------------------
 GxEPD2_BW<GxEPD2_290_T5D, GxEPD2_290_T5D::HEIGHT> display(GxEPD2_290_T5D(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
-// If your panel is V2 instead, use the following:
+// If your panel is V2 instead, use:
 // GxEPD2_BW<GxEPD2_290_T94_V2, GxEPD2_290_T94_V2::HEIGHT> display(GxEPD2_290_T94_V2(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
 
 U8G2_FOR_ADAFRUIT_GFX u8g2;
 
 // ------------------ BLE UUIDs ------------------
 static const BLEUUID SERVICE_UUID      ("0000f00d-0000-1000-8000-00805f9b34fb");
-static const BLEUUID CHAR_UUID_YARDAGE ("0000f00e-0000-1000-8000-00805f9b34fb"); // yardage
-static const BLEUUID CHAR_UUID_CONTROL ("0000f00f-0000-1000-8000-00805f9b34fb"); // control
-static const BLEUUID CHAR_UUID_IMAGE   ("0000f010-0000-1000-8000-00805f9b34fb"); // green image (binary)
+static const BLEUUID CHAR_UUID_YARDAGE ("0000f00e-0000-1000-8000-00805f9b34fb");
+static const BLEUUID CHAR_UUID_CONTROL ("0000f00f-0000-1000-8000-00805f9b34fb");
+static const BLEUUID CHAR_UUID_IMAGE   ("0000f010-0000-1000-8000-00805f9b34fb");
 
-// ------------------ UI constants (tighter spacing) ------------------
+// ------------------ UI constants (edge safety) ------------------
 namespace UI {
-  static int RIGHT_PAD    = 12; // keep away from right edge
-  static int CELL_PAD     = 4;  // inset inside each cell/region
-  static int GAP_FB       = 6;  // min gap between BIG and F/B column
-  static int FB_STACK_GAP = 4;  // F vs B spacing
-  static uint32_t FULL_REFRESH_EVERY = 8;     // force full refresh periodically
-  static uint32_t MIN_FULL_GAP_MS    = 15000; // min time between full refreshes
+  static int RIGHT_PAD    = 18;       // keep glyphs away from hard right edge
+  static uint32_t FULL_REFRESH_EVERY = 8;
+  static uint32_t MIN_FULL_GAP_MS    = 15000;
 }
 
 // ------------------ Runtime config via CFG ------------------
@@ -71,9 +73,6 @@ static int16_t  imgW = 0, imgH = 0;         // pixels
 static uint8_t* imgData           = nullptr; // 1bpp, MSB first
 static uint16_t imgStride         = 0;      // bytes per row
 
-// ------------------ Simple logging (no-op) ------------------
-static inline void D(const char*, ...) { /* no-op */ }
-
 // ------------------ Helpers ------------------
 static inline bool isStale() {
   if (lastUpdateRxMs == 0) return true;
@@ -87,83 +86,17 @@ enum class VAlign { Top, Middle, Bottom };
 struct Rect { int16_t x, y, w, h; };
 struct TextPos { int16_t x, y; };
 
-static inline Rect inset(const Rect& r, int pad) {
-  Rect o = r;
-  o.x += pad; o.y += pad;
-  o.w = (o.w > 2*pad) ? (o.w - 2*pad) : 0;
-  o.h = (o.h > 2*pad) ? (o.h - 2*pad) : 0;
-  return o;
-}
-
-static inline void measureGFX(Adafruit_GFX& d, const String& s,
-                              int16_t& x1, int16_t& y1, uint16_t& w, uint16_t& h) {
-  d.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
-}
-
-static inline TextPos placeGFXInCell(const Rect& cellRaw, const String& s,
-                                     Adafruit_GFX& d, HAlign ha, VAlign va) {
-  Rect cell = inset(cellRaw, UI::CELL_PAD);
-  int16_t x1,y1; uint16_t w,h;
-  measureGFX(d, s, x1, y1, w, h);
-
-  int16_t bx = cell.x;
-  if (ha == HAlign::Center) bx = cell.x + ((int)cell.w - (int)w)/2;
-  else if (ha == HAlign::Right) bx = cell.x + (int)cell.w - (int)w;
-
-  int16_t by = cell.y;
-  if (va == VAlign::Middle) by = cell.y + ((int)cell.h - (int)h)/2;
-  else if (va == VAlign::Bottom) by = cell.y + (int)cell.h - (int)h;
-
-  int16_t cx = bx - x1;
-  int16_t cy = by - y1;
-
-  int16_t hardRight = display.width() - UI::RIGHT_PAD;
-  if (cx + (int)w > hardRight) cx = (hardRight - (int16_t)w) > cell.x ? (hardRight - (int16_t)w) : cell.x;
-
-  if (cx < 0) cx = 0;
-  if (cy < 0) cy = 0;
-  if (cx > (int16_t)display.width() - 1) cx = display.width() - 1;
-  if (cy > (int16_t)display.height() - 1) cy = display.height() - 1;
-
-  return { cx, cy };
-}
-
-static inline TextPos placeU8g2InCell(const Rect& cellRaw, const char* text,
-                                      U8G2_FOR_ADAFRUIT_GFX& u8,
-                                      HAlign ha, VAlign va) {
-  Rect cell = inset(cellRaw, UI::CELL_PAD);
-
-  int w   = u8.getUTF8Width(text);
-  int asc = u8.getFontAscent();
-  int des = u8.getFontDescent(); // negative
-  int h   = asc - des;
-
-  int16_t x = cell.x;
-  if (ha == HAlign::Center) x = cell.x + (cell.w - w)/2;
-  else if (ha == HAlign::Right) x = cell.x + cell.w - w;
-
-  int16_t baseline;
-  if (va == VAlign::Top)         baseline = cell.y - des;
-  else if (va == VAlign::Middle) baseline = cell.y + (cell.h + h)/2 - des;
-  else                           baseline = cell.y + cell.h - des;
-
-  int16_t hardRight = display.width() - UI::RIGHT_PAD;
-  if (x + w > hardRight) x = (hardRight - w) > cell.x ? (hardRight - w) : cell.x;
-
-  if (x < 0) x = 0;
-  if (baseline < 0) baseline = 0;
-  if (x > (int16_t)display.width() - 1) x = display.width() - 1;
-  if (baseline > (int16_t)display.height() - 1) baseline = display.height() - 1;
-
-  return { x, baseline };
-}
-
-// ------------------ Grid with merges (5 rows x 3 cols) ------------------
+// ------------------ Grid + merges + spacing ------------------
 struct Grid {
-  int16_t x, y, w, h;
-  int rows, cols;
-  int16_t rh[5];
-  int16_t cw[3];
+  // frame
+  int16_t x=0, y=0, w=0, h=0;
+  // structure
+  int rows=0, cols=0;
+  int16_t rh[5]{};
+  int16_t cw[3]{};
+  // spacing
+  int16_t padX=3, padY=3;   // inner padding in each cell/zone
+  int16_t gutX=4, gutY=2;   // gutters between columns/rows (for cross-zone relationships)
 
   Rect cell(int r, int c) const {
     int16_t cx = x, cy = y;
@@ -180,41 +113,140 @@ struct Grid {
     int16_t rhh= (int16_t)((b.y + b.h) - a.y);
     return { rx, ry, rw, rhh };
   }
-};
+} grid;
 
-// Zones we draw into:
 struct Zones {
   Rect rcImg;     // left column merged (rows 0..4, col 0)
   Rect rcMain;    // column 1 merged rows 1..3
   Rect rcHole;    // col 2, row 1
   Rect rcFront;   // col 2, row 2
   Rect rcBack;    // col 2, row 3
-};
-static Grid  grid;
-static Zones zone;
+} zone;
 
+static inline Rect inset(const Rect& r, int padX, int padY) {
+  Rect o = r;
+  o.x += padX; o.y += padY;
+  o.w = (o.w > 2*padX) ? (o.w - 2*padX) : 0;
+  o.h = (o.h > 2*padY) ? (o.h - 2*padY) : 0;
+  return o;
+}
+
+// Adafruit_GFX measure/placement
+static inline void measureGFX(Adafruit_GFX& d, const String& s,
+                              int16_t& x1, int16_t& y1, uint16_t& w, uint16_t& h) {
+  d.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
+}
+static inline TextPos placeGFXIn(const Rect& raw, const String& s,
+                                 Adafruit_GFX& d, HAlign ha, VAlign va) {
+  Rect cell = inset(raw, grid.padX, grid.padY);
+  int16_t x1,y1; uint16_t w,h; measureGFX(d, s, x1, y1, w, h);
+
+  int16_t bx = cell.x;
+  if (ha == HAlign::Center) bx = cell.x + ((int)cell.w - (int)w)/2;
+  else if (ha == HAlign::Right) bx = cell.x + (int)cell.w - (int)w;
+
+  int16_t by = cell.y;
+  if (va == VAlign::Middle) by = cell.y + ((int)cell.h - (int)h)/2;
+  else if (va == VAlign::Bottom) by = cell.y + (int)cell.h - (int)h;
+
+  int16_t cx = bx - x1;
+  int16_t cy = by - y1;
+
+  // hard right margin
+  int16_t hardRight = display.width() - UI::RIGHT_PAD;
+  if (cx + (int)w > hardRight) cx = (hardRight - (int16_t)w);
+
+  // clamp
+  if (cx < 0) cx = 0;
+  if (cy < 0) cy = 0;
+  if (cx > (int16_t)display.width() - 1) cx = display.width() - 1;
+  if (cy > (int16_t)display.height() - 1) cy = display.height() - 1;
+
+  return { cx, cy };
+}
+
+// U8g2 measure/placement
+static inline TextPos placeU8g2In(const Rect& raw, const char* text,
+                                  U8G2_FOR_ADAFRUIT_GFX& u8,
+                                  HAlign ha, VAlign va) {
+  Rect cell = inset(raw, grid.padX, grid.padY);
+
+  int w   = u8.getUTF8Width(text);
+  int asc = u8.getFontAscent();
+  int des = u8.getFontDescent(); // negative
+  int h   = asc - des;
+
+  int16_t x = cell.x;
+  if (ha == HAlign::Center) x = cell.x + (cell.w - w)/2;
+  else if (ha == HAlign::Right) x = cell.x + cell.w - w;
+
+  int16_t baseline;
+  if (va == VAlign::Top)         baseline = cell.y - des;
+  else if (va == VAlign::Middle) baseline = cell.y + (cell.h + h)/2 - des;
+  else                           baseline = cell.y + cell.h - des;
+
+  // hard right margin
+  int16_t hardRight = display.width() - UI::RIGHT_PAD;
+  if (x + w > hardRight) x = (hardRight - w);
+
+  // clamp
+  if (x < 0) x = 0;
+  if (baseline < 0) baseline = 0;
+  if (x > (int16_t)display.width() - 1) x = display.width() - 1;
+  if (baseline > (int16_t)display.height() - 1) baseline = display.height() - 1;
+
+  return { x, baseline };
+}
+
+// ------------------ Build Grid from your spec ------------------
 static void buildGrid() {
   const int16_t W = display.width();
   const int16_t H = display.height();
+
   grid.x = 0; grid.y = 0; grid.w = W; grid.h = H;
   grid.rows = 5; grid.cols = 3;
 
-  // Column widths: left image ~80, right info ~64, middle = remainder
+  // spacing (single source of truth)
+  grid.padX = 3;   // inner padding
+  grid.padY = 3;
+  grid.gutX = 6;   // inter-column gutter used for cross-alignments
+  grid.gutY = 2;
+
+  // Column widths per spec:
+  // col0 (image) ~80, col2 (right info) ~78 (a tad wider), col1 = remainder (>=40)
   grid.cw[0] = 80;
-  grid.cw[2] = 64;
+  grid.cw[2] = 78;
   grid.cw[1] = (W - grid.cw[0] - grid.cw[2] > 40) ? (W - grid.cw[0] - grid.cw[2]) : 40;
 
-  // Row heights: 5 equal bands (+distribute leftovers)
+  // 5 rows ~ equal, distribute leftovers
   int16_t rH = H / 5;
   int16_t leftover = H - rH*5;
   for (int r=0;r<5;r++) grid.rh[r] = rH + (r < leftover ? 1 : 0);
 
   // Zones
-  zone.rcImg  = grid.span(0,0, 4,0);    // entire left column
-  zone.rcMain = grid.span(1,1, 3,1);    // middle rows of middle column
-  zone.rcHole = grid.cell(1,2);         // right column rows 1..3
+  zone.rcImg  = grid.span(0,0, 4,0);  // all rows of col 0
+  zone.rcMain = grid.span(1,1, 3,1);  // rows 1..3 of col 1
+  zone.rcHole = grid.cell(1,2);       // col 2 rows 1..3
   zone.rcFront= grid.cell(2,2);
   zone.rcBack = grid.cell(3,2);
+}
+
+static void drawGridOverlay() {
+#if SHOW_GRID
+  // Draw *cell* boundaries only (debug). Merges are visual because we don't draw interior lines for merged spans explicitly.
+  int16_t x = grid.x, y = grid.y;
+
+  // Columns
+  int16_t cx = x;
+  for (int c=0;c<grid.cols;c++) {
+    int16_t cy = y;
+    for (int r=0;r<grid.rows;r++) {
+      display.drawRect(cx, cy, grid.cw[c], grid.rh[r], GxEPD_BLACK);
+      cy += grid.rh[r];
+    }
+    cx += grid.cw[c];
+  }
+#endif
 }
 
 // ------------------ Drawing ------------------
@@ -225,7 +257,6 @@ static void drawImageArea(bool full) {
 
   display.firstPage();
   do {
-    // Always clear the image region
     display.fillRect(r.x, r.y, r.w, r.h, GxEPD_WHITE);
 
     if (imgValid && imgData && imgW > 0 && imgH > 0) {
@@ -235,7 +266,6 @@ static void drawImageArea(bool full) {
       if (dx < r.x) dx = r.x;
       if (dy < r.y) dy = r.y;
 
-      // Blit 1bpp MSB image
       for (int y=0; y<imgH; y++) {
         int16_t py = dy + y;
         if (py < r.y || py >= r.y + r.h) continue;
@@ -266,63 +296,63 @@ static void drawMainBand(bool full) {
   if (isStale()) strcpy(bigBuf, "---");
   else snprintf(bigBuf, sizeof(bigBuf), "%u", (unsigned)gCenterY);
 
-  // Partial window covering main + right column
-  Rect r = zone.rcMain;
-  int16_t rcRH = (int16_t)((zone.rcBack.y + zone.rcBack.h) - zone.rcHole.y);
-  Rect rcR = { zone.rcHole.x, zone.rcHole.y, zone.rcHole.w, rcRH };
-
-  int16_t minX = (r.x < rcR.x) ? r.x : rcR.x;
-  int16_t minY = (r.y < rcR.y) ? r.y : rcR.y;
-  int16_t maxX = ((r.x + r.w) > (rcR.x + rcR.w)) ? (r.x + r.w) : (rcR.x + rcR.w);
-  int16_t maxY = ((r.y + r.h) > (rcR.y + rcR.h)) ? (r.y + r.h) : (rcR.y + rcR.h);
+  // Partial window covering middle+right zones
+  int16_t minX = min(zone.rcMain.x, zone.rcHole.x);
+  int16_t minY = min(zone.rcMain.y, zone.rcHole.y);
+  int16_t maxX = max(zone.rcMain.x + zone.rcMain.w, zone.rcBack.x + zone.rcBack.w);
+  int16_t maxY = max(zone.rcMain.y + zone.rcMain.h, zone.rcBack.y + zone.rcBack.h);
   Rect band = { minX, minY, (int16_t)(maxX - minX), (int16_t)(maxY - minY) };
 
   if (!full) display.setPartialWindow(band.x, band.y, band.w, band.h);
 
   display.firstPage();
   do {
-    // Clear band
     display.fillRect(band.x, band.y, band.w, band.h, GxEPD_WHITE);
+
+    // Optional grid overlay
+    drawGridOverlay();
 
     // --- Right column: Hole / Front / Back ---
     display.setTextColor(GxEPD_BLACK);
     display.setFont(&FreeSansBold12pt7b);
 
-    auto pHole = placeGFXInCell(zone.rcHole, sHole, display, HAlign::Right, VAlign::Top);
+    auto pHole = placeGFXIn(zone.rcHole, sHole, display, HAlign::Right, VAlign::Top);
     display.setCursor(pHole.x, pHole.y);
     display.print(sHole);
 
-    auto pF = placeGFXInCell(zone.rcFront, sF, display, HAlign::Right, VAlign::Middle);
+    auto pF = placeGFXIn(zone.rcFront, sF, display, HAlign::Right, VAlign::Middle);
     display.setCursor(pF.x, pF.y);
     display.print(sF);
 
-    auto pB = placeGFXInCell(zone.rcBack, sB, display, HAlign::Right, VAlign::Middle);
+    auto pB = placeGFXIn(zone.rcBack, sB, display, HAlign::Right, VAlign::Middle);
     display.setCursor(pB.x, pB.y);
     display.print(sB);
 
-    // Measure right column max width to place BIG with a fixed gap
-    int16_t x1,y1; uint16_t fW=0,fH=0,bW=0,bH=0,hW=0,hH=0;
-    display.getTextBounds(sF, 0,0, &x1,&y1,&fW,&fH);
-    display.getTextBounds(sB, 0,0, &x1,&y1,&bW,&bH);
-    display.getTextBounds(sHole,0,0, &x1,&y1,&hW,&hH);
-    uint16_t rightColW = (hW > fW ? hW : fW);
-    rightColW = (rightColW > bW ? rightColW : bW);
-
-    // --- BIG number in middle column, right-aligned to the F/B column with GAP ---
+    // --- BIG number in middle column ---
+    // Anchor BIG to the left edge of the right column (minus grid gutter),
+    // and within the middle cell’s bounds.
     u8g2.setFont(u8g2_font_logisoso92_tn);
     u8g2.setForegroundColor(GxEPD_BLACK);
     u8g2.setBackgroundColor(GxEPD_WHITE);
 
-    auto pBig = placeU8g2InCell(zone.rcMain, bigBuf, u8g2, HAlign::Right, VAlign::Middle);
+    // vertical placement in middle of rcMain
+    auto pBig = placeU8g2In(zone.rcMain, bigBuf, u8g2, HAlign::Right, VAlign::Middle);
 
-    int16_t fbRight = zone.rcBack.x + zone.rcBack.w;
     int bigW = u8g2.getUTF8Width(bigBuf);
-    int16_t bigRightLimit = fbRight - UI::GAP_FB - rightColW;
-    int16_t desiredBigLeft = (bigRightLimit - bigW);
-    if (desiredBigLeft < zone.rcMain.x + UI::CELL_PAD) desiredBigLeft = zone.rcMain.x + UI::CELL_PAD;
+    int16_t rightColLeft = zone.rcHole.x;                 // left edge of right column
+    int16_t rightLimit   = rightColLeft - grid.gutX;      // leave a gutter
+    int16_t desiredLeft  = rightLimit - bigW;
 
-    u8g2.setCursor(desiredBigLeft, pBig.y);
+    int16_t minLeft = zone.rcMain.x + grid.padX;          // respect main cell padding
+    if (desiredLeft < minLeft) desiredLeft = minLeft;
+
+    // hard right margin safety (shouldn't trigger, but double-safe)
+    int16_t hardRight = display.width() - UI::RIGHT_PAD;
+    if (desiredLeft + bigW > hardRight) desiredLeft = hardRight - bigW;
+
+    u8g2.setCursor(desiredLeft, pBig.y);
     u8g2.print(bigBuf);
+
   } while (display.nextPage());
 }
 
@@ -344,13 +374,14 @@ static void drawScreen(bool forceFull) {
     display.firstPage();
     do {
       display.fillScreen(GxEPD_WHITE);
+      buildGrid();         // rebuild grid each full refresh
       drawImageArea(true);
       drawMainBand(true);
     } while (display.nextPage());
     lastFullRefreshMs = now;
     partialCount = 0;
   } else {
-    drawMainBand(false); // image area updates only when a new image arrives
+    drawMainBand(false);   // image area only repaints when image changes
     partialCount++;
   }
 
@@ -375,7 +406,7 @@ static void setYardage(uint8_t hole, uint16_t centerY, bool hasFB, uint16_t fron
   lastUpdateRxMs = millis();
 
   if (holeChanged) {
-    // Clear stored image immediately
+    // Clear old green image immediately; redraw fully so the left area blanks
     imgValid = false;
     if (imgData) { free(imgData); imgData = nullptr; }
     imgW = imgH = imgStride = 0;
@@ -485,8 +516,7 @@ class ImageCallbacks : public NimBLECharacteristicCallbacks {
       rxImageBuf.assign(v.begin(), v.end());
       goto try_decode;
     } else {
-      // ignore small ASCII control lines here
-      return;
+      return; // ignore non-GHIM small lines
     }
 
 try_decode:
@@ -496,9 +526,6 @@ try_decode:
 
     uint16_t w = p[4] | (p[5]<<8);
     uint16_t h = p[6] | (p[7]<<8);
-    // int16_t x  = (int16_t)(p[8] | (p[9]<<8));   // ignored
-    // int16_t y  = (int16_t)(p[10]| (p[11]<<8));  // ignored
-    // uint8_t flags = p[12];                      // ignored
     uint16_t stride = (w + 7) >> 3;
     size_t headerLen = 4 + 2 + 2 + 2 + 2 + 1;
     size_t dataLen = (size_t)stride * h;
@@ -515,7 +542,7 @@ try_decode:
       imgValid = true;
       drawImageArea(false); // partial repaint of image region only
     } else {
-      imgValid = false; // out of memory; just clear region next full draw
+      imgValid = false; // out of memory
     }
     rxImageBuf.clear();
   }
